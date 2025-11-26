@@ -5,10 +5,12 @@ import { type Session } from '@supabase/supabase-js'
 import { watchLcuConnection } from '../lib/lcuConnection'
 import { getLcuClient } from '../lib/lcuClient'
 import { acceptReadyCheck, pickBanChampion } from '../lcuHelper'
+import { getBridgeManager } from '../bridge/bridgeManager'
 
 const Background = () => {
   const [session, setSession] = useState<Session | null>(null);
   const [autoAccept] = useState(true);
+  const [bridgeCode] = useState<string | null>(null);
 
   useEffect(() => {
     // 1. Handle Auth Session
@@ -21,6 +23,64 @@ const Background = () => {
     });
 
     return () => subscription.unsubscribe();
+  }, []);
+
+  // Initialize Bridge Manager (but don't auto-connect - wait for user to click Connect)
+  useEffect(() => {
+    // Set up connection request callback
+    const bridge = getBridgeManager();
+    bridge.setConnectionRequestCallback(async (deviceInfo) => {
+      // Show approval modal in desktop window
+      return new Promise((resolve) => {
+        // Send message to desktop window to show approval modal
+        overwolf.windows.obtainDeclaredWindow('desktop', (result: any) => {
+          if (result.success) {
+            overwolf.windows.sendMessage(result.window.id, 'connection_request', JSON.stringify({
+              type: 'connection_request',
+              deviceInfo
+            }), () => {});
+            
+            // Listen for approval response
+            const messageListener = (windowId: any, _messageId: any, message: any) => {
+              let messageContent: string | null = null;
+              
+              if (typeof message === 'string') {
+                messageContent = message;
+              } else if (windowId && typeof windowId === 'object' && typeof windowId.content === 'string') {
+                messageContent = windowId.content;
+              }
+              
+              if (messageContent) {
+                try {
+                  const data = JSON.parse(messageContent);
+                  if (data.type === 'connection_response' && data.deviceIdentity === deviceInfo.identity) {
+                    overwolf.windows.onMessageReceived.removeListener(messageListener);
+                    resolve(data.approved);
+                  }
+                } catch (error) {
+                  // Ignore parsing errors
+                }
+              }
+            };
+            
+            overwolf.windows.onMessageReceived.addListener(messageListener);
+            
+            // Timeout after 30 seconds
+            setTimeout(() => {
+              overwolf.windows.onMessageReceived.removeListener(messageListener);
+              resolve(false);
+            }, 30000);
+          } else {
+            resolve(false);
+          }
+        });
+      });
+    });
+
+    return () => {
+      const bridge = getBridgeManager();
+      bridge.disconnect();
+    };
   }, []);
 
   useEffect(() => {
@@ -459,6 +519,13 @@ const Background = () => {
       <h1>Background Window</h1>
       <p>Hidden window handling game events.</p>
       <p>User: {session?.user?.email ?? 'Not logged in'}</p>
+      {bridgeCode && (
+        <div>
+          <h2>Mobile Connection Code</h2>
+          <p style={{ fontSize: '24px', fontWeight: 'bold' }}>{bridgeCode}</p>
+          <p>Enter this code in the mobile app to connect</p>
+        </div>
+      )}
     </div>
   )
 }

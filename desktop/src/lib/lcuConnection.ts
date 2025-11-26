@@ -18,80 +18,41 @@ const LOCKFILE_PATHS = [
 /**
  * Reads the League client lockfile and extracts connection information
  */
-export async function discoverLcuConnection(): Promise<LcuConfig | null> {
-  console.log('[LCU Connection] Starting discovery...');
-  
-  // Try all possible lockfile locations
-  // Note: %LOCALAPPDATA% is a Windows environment variable that Overwolf should handle
-  // If it doesn't work, we'll try the other paths
-  const paths = LOCKFILE_PATHS;
-
-  console.log('[LCU Connection] Checking', paths.length, 'lockfile paths');
-
-  for (const path of paths) {
-    console.log('[LCU Connection] Trying path:', path);
+export async function discoverLcuConnection(verbose: boolean = false): Promise<LcuConfig | null> {
+  // Try all possible lockfile locations silently
+  for (const path of LOCKFILE_PATHS) {
     try {
-      const config = await readLockfile(path);
+      const config = await readLockfile(path, verbose);
       if (config) {
-        console.log('[LCU Connection] ✓ Found LCU config at:', path, 'Port:', config.port);
         return config;
-      } else {
-        console.log('[LCU Connection] ✗ No config found at:', path);
       }
-    } catch (error: any) {
-      console.error(`[LCU Connection] ✗ Error reading lockfile at ${path}:`, error?.message || error);
+    } catch {
+      // Silently continue to next path
     }
   }
-
-  console.log('[LCU Connection] ✗ No LCU connection found in any path');
   return null;
 }
 
 /**
  * Reads and parses the lockfile at the specified path
  */
-async function readLockfile(path: string): Promise<LcuConfig | null> {
+async function readLockfile(path: string, verbose: boolean = false): Promise<LcuConfig | null> {
   return new Promise((resolve, reject) => {
-    console.log('[LCU Connection] Attempting to read lockfile:', path);
-    
     if (!overwolf || !overwolf.io) {
-      console.error('[LCU Connection] Overwolf API not available');
       reject(new Error('Overwolf API not available'));
       return;
     }
 
-    // Overwolf FileSystem API - readTextFile requires 3 arguments: path, options, callback
-    // Signature: readTextFile(path, options, callback)
-    console.log('[LCU Connection] Calling overwolf.io.readTextFile...');
-    
     try {
-      // Overwolf API requires options object (can be empty {})
       overwolf.io.readTextFile(path, {}, (result: any) => {
-        console.log('[LCU Connection] readTextFile result:', result);
-        
-        if (!result) {
-          console.log('[LCU Connection] No result from readTextFile');
+        if (!result || result.status === 'error' || result.error || !result.content) {
           resolve(null);
           return;
         }
 
-        if (result.status === 'error' || result.error) {
-          console.log('[LCU Connection] readTextFile error:', result.error || result.status);
-          resolve(null);
-          return;
-        }
-
-        if (!result.content) {
-          console.log('[LCU Connection] No content in result');
-          resolve(null);
-          return;
-        }
-
-        console.log('[LCU Connection] Lockfile content received, length:', result.content.length);
-        parseLockfileContent(result.content, resolve, reject);
+        parseLockfileContent(result.content, resolve, reject, verbose);
       });
     } catch (error: any) {
-      console.error('[LCU Connection] Exception calling readTextFile:', error);
       reject(error);
     }
   });
@@ -100,16 +61,12 @@ async function readLockfile(path: string): Promise<LcuConfig | null> {
 /**
  * Parses lockfile content
  */
-function parseLockfileContent(content: string, resolve: (value: LcuConfig | null) => void, reject: (error: any) => void): void {
+function parseLockfileContent(content: string, resolve: (value: LcuConfig | null) => void, reject: (error: any) => void, verbose: boolean = false): void {
   try {
-    console.log('[LCU Connection] Parsing lockfile content:', content.substring(0, 50) + '...');
-    
     // Lockfile format: process:pid:port:password:protocol
     const parts = content.trim().split(':');
-    console.log('[LCU Connection] Lockfile parts:', parts.length, 'parts');
     
     if (parts.length < 4) {
-      console.log('[LCU Connection] Invalid lockfile format: not enough parts');
       resolve(null);
       return;
     }
@@ -118,18 +75,16 @@ function parseLockfileContent(content: string, resolve: (value: LcuConfig | null
     const port = parseInt(parts[2], 10);
     const password = parts[3];
 
-    console.log('[LCU Connection] Parsed values - PID:', pid, 'Port:', port, 'Password length:', password?.length);
-
     if (isNaN(pid) || isNaN(port) || !password) {
-      console.log('[LCU Connection] Invalid parsed values');
       resolve(null);
       return;
     }
 
-    console.log('[LCU Connection] ✓ Successfully parsed lockfile');
     resolve({ pid, port, password });
   } catch (error) {
-    console.error('[LCU Connection] Error parsing lockfile:', error);
+    if (verbose) {
+      console.error('[LCU Connection] Error parsing lockfile:', error);
+    }
     reject(error);
   }
 }
@@ -148,7 +103,6 @@ export function watchLcuConnection(
   const checkConnection = async () => {
     if (!isRunning) return;
 
-    console.log('[LCU Connection] Checking for LCU connection...');
     const config = await discoverLcuConnection();
 
     if (config) {
@@ -156,16 +110,15 @@ export function watchLcuConnection(
       if (!lastConfig || 
           lastConfig.port !== config.port || 
           lastConfig.password !== config.password) {
-        console.log('[LCU Connection] New/updated connection detected');
+        console.log('[LCU Connection] League client connected - Port:', config.port);
         lastConfig = config;
         onConnected(config);
-      } else {
-        console.log('[LCU Connection] Connection still active');
       }
+      // Don't log "still active" to reduce noise
     } else {
       // Connection lost
       if (lastConfig) {
-        console.log('[LCU Connection] Connection lost');
+        console.log('[LCU Connection] League client disconnected');
         lastConfig = null;
         onDisconnected();
       }

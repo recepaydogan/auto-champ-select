@@ -6,9 +6,10 @@ interface ModalProps {
     message: string;
     onClose: () => void;
     type?: 'info' | 'error' | 'success';
+    customActions?: React.ReactNode;
 }
 
-const Modal: React.FC<ModalProps> = ({ isOpen, title, message, onClose, type = 'info' }) => {
+const Modal: React.FC<ModalProps> = ({ isOpen, title, message, onClose, type = 'info', customActions }) => {
     if (!isOpen) return null;
 
     return (
@@ -29,17 +30,19 @@ const Modal: React.FC<ModalProps> = ({ isOpen, title, message, onClose, type = '
                         ✕
                     </button>
                 </div>
-                <p className="text-neutral-300 mb-6 leading-relaxed">
+                <p className="text-neutral-300 mb-6 leading-relaxed whitespace-pre-line">
                     {message}
                 </p>
-                <div className="flex justify-end">
-                    <button
-                        onClick={onClose}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-                    >
-                        Okay
-                    </button>
-                </div>
+                {customActions || (
+                    <div className="flex justify-end">
+                        <button
+                            onClick={onClose}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                        >
+                            Okay
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
     );

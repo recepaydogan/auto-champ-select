@@ -293,116 +293,51 @@ export class LcuClient {
         reject(error);
       };
       
-      // Set up response listener
-      const messageListener = (windowId: any, messageId: any, message: any) => {
-        console.log('[LCU Client] ===== Message Received in Desktop =====');
-        console.log('[LCU Client] windowId:', windowId);
-        console.log('[LCU Client] messageId:', messageId);
-        console.log('[LCU Client] message type:', typeof message);
-        console.log('[LCU Client] Expected requestId:', requestId);
-        
+      // Set up response listener (minimal logging)
+      const messageListener = (windowId: any, _messageId: any, message: any) => {
         // Extract message content - Overwolf API puts it in windowId.content
         let messageContent: string | null = null;
         
-        // Try windowId.content first (based on actual Overwolf behavior)
         if (windowId && typeof windowId === 'object' && typeof windowId.content === 'string') {
           messageContent = windowId.content;
-          console.log('[LCU Client] ✓ Extracted message from windowId.content');
-        }
-        // Fallback: try message parameter as string
-        else if (typeof message === 'string') {
+        } else if (typeof message === 'string') {
           messageContent = message;
-          console.log('[LCU Client] ✓ Extracted message from message parameter');
-        }
-        // Fallback: try message.content
-        else if (message && typeof message === 'object' && typeof message.content === 'string') {
+        } else if (message && typeof message === 'object' && typeof message.content === 'string') {
           messageContent = message.content;
-          console.log('[LCU Client] ✓ Extracted message from message.content');
-        }
-        // Fallback: try windowId as string
-        else if (typeof windowId === 'string') {
+        } else if (typeof windowId === 'string') {
           messageContent = windowId;
-          console.log('[LCU Client] ✓ Extracted message from windowId (string)');
         }
         
-        if (!messageContent) {
-          console.error('[LCU Client] ✗ Could not extract message content');
-          console.error('[LCU Client] Raw parameters:', {
-            windowIdType: typeof windowId,
-            windowIdValue: windowId,
-            messageIdType: typeof messageId,
-            messageIdValue: messageId,
-            messageType: typeof message,
-            messageValue: message
-          });
-          console.log('[LCU Client] =====================================');
-          return;
-        }
-        
-        console.log('[LCU Client] Message content length:', messageContent.length);
-        console.log('[LCU Client] Message preview:', messageContent.substring(0, 200));
+        if (!messageContent) return;
         
         try {
           const data = JSON.parse(messageContent);
-          console.log('[LCU Client] ✓ Successfully parsed message JSON');
-          console.log('[LCU Client] Message type:', data.type);
-          console.log('[LCU Client] Message requestId:', data.requestId);
-          console.log('[LCU Client] RequestId matches:', data.requestId === requestId);
           
           if (data.type === 'lcu_response' && data.requestId === requestId) {
-            console.log('[LCU Client] ✓ This is our response!');
             overwolf.windows.onMessageReceived.removeListener(messageListener);
             
             if (data.error) {
-              console.error('[LCU Client] Response contains error:', data.error);
               const error = new Error(data.error);
               if (isExpectedLcuError(error)) {
-                console.log('[LCU Client] Error is expected, returning null');
                 clearTimeoutAndResolve(null);
               } else {
-                console.error('[LCU Client] Unexpected error, rejecting');
                 clearTimeoutAndReject(error);
               }
             } else {
-              console.log('[LCU Client] ✓ Response contains data');
-              console.log('[LCU Client] Data type:', typeof data.data);
-              console.log('[LCU Client] Data is array:', Array.isArray(data.data));
-              if (Array.isArray(data.data)) {
-                console.log('[LCU Client] Data length:', data.data.length);
-                if (data.data.length > 0) {
-                  console.log('[LCU Client] Sample data:', data.data.slice(0, 2));
-                }
-              }
-              console.log('[LCU Client] Resolving with data');
               clearTimeoutAndResolve(data.data);
             }
-            console.log('[LCU Client] =====================================');
-          } else {
-            console.log('[LCU Client] Not our message (type:', data.type, ', requestId:', data.requestId, 'vs', requestId, ')');
-            console.log('[LCU Client] =====================================');
           }
-        } catch (error) {
-          console.error('[LCU Client] ✗ Error parsing message JSON');
-          console.error('[LCU Client] Error:', error);
-          console.error('[LCU Client] Message preview:', messageContent.substring(0, 200));
-          console.log('[LCU Client] =====================================');
+          // Ignore messages with different requestId (they're for other listeners)
+        } catch {
+          // Ignore parse errors
         }
       };
 
       overwolf.windows.onMessageReceived.addListener(messageListener);
 
       // Send request to background
-      console.log('[LCU Client] ===== Sending Request to Background =====');
-      console.log('[LCU Client] Request ID:', requestId);
-      console.log('[LCU Client] Path:', path);
-      console.log('[LCU Client] Method:', method);
-      console.log('[LCU Client] Has config:', !!this.config);
-      
       overwolf.windows.obtainDeclaredWindow('background', (result: any) => {
         if (result.success) {
-          console.log('[LCU Client] ✓ Background window found');
-          console.log('[LCU Client] Background window ID:', result.window.id);
-          
           const messageContent = JSON.stringify({
             type: 'lcu_request',
             requestId,
@@ -412,43 +347,23 @@ export class LcuClient {
             config: this.config
           });
           
-          console.log('[LCU Client] Message content length:', messageContent.length, 'chars');
-          console.log('[LCU Client] Message preview:', messageContent.substring(0, 200));
-          console.log('[LCU Client] Sending message to background window...');
-          
           overwolf.windows.sendMessage(result.window.id, requestId, messageContent, (sendResult: any) => {
             if (sendResult.status === 'error') {
-              console.error('[LCU Client] ✗ Failed to send message to background');
-              console.error('[LCU Client] Error:', sendResult.error);
               overwolf.windows.onMessageReceived.removeListener(messageListener);
               clearTimeoutAndReject(new Error('Failed to send request to background: ' + (sendResult.error || 'Unknown error')));
-            } else {
-              console.log('[LCU Client] ✓ Message sent successfully to background');
-              console.log('[LCU Client] Send result:', sendResult);
-              console.log('[LCU Client] Waiting for response (timeout: 30s)...');
             }
           });
         } else {
-          console.error('[LCU Client] ✗ Background window not found');
-          console.error('[LCU Client] Obtain window result:', result);
           overwolf.windows.onMessageReceived.removeListener(messageListener);
           clearTimeoutAndReject(new Error('Background window not found'));
         }
       });
 
-      // Timeout after 30 seconds (increased temporarily for debugging)
+      // Timeout after 10 seconds
       timeoutId = setTimeout(() => {
         overwolf.windows.onMessageReceived.removeListener(messageListener);
-        console.error('[LCU Client] ===== REQUEST TIMEOUT =====');
-        console.error('[LCU Client] Request timed out after 30 seconds');
-        console.error('[LCU Client] Method:', method);
-        console.error('[LCU Client] Path:', path);
-        console.error('[LCU Client] Request ID:', requestId);
-        console.error('[LCU Client] This suggests the background script did not respond.');
-        console.error('[LCU Client] Please check background script console logs.');
-        console.error('[LCU Client] ===========================');
-        clearTimeoutAndReject(new Error('Request timeout after 30 seconds'));
-      }, 30000);
+        clearTimeoutAndReject(new Error('Request timeout'));
+      }, 10000);
     });
   }
 

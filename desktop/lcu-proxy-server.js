@@ -4,11 +4,94 @@
 
 import http from 'http';
 import https from 'https';
+import fs from 'fs';
+import path from 'path';
+import { homedir } from 'os';
 
 const PROXY_PORT = 21337; // Local proxy port
 
-// Store LCU config (will be set by first request)
+// Store LCU config (will be set by first request or auto-discovered)
 let lcuConfig = null;
+
+// Common lockfile locations for Windows
+const LOCKFILE_PATHS = [
+  path.join(homedir(), 'AppData', 'Local', 'Riot Games', 'League of Legends', 'lockfile'),
+  'C:\\Riot Games\\League of Legends\\lockfile',
+  'C:\\Program Files\\Riot Games\\League of Legends\\lockfile',
+  'C:\\Program Files (x86)\\Riot Games\\League of Legends\\lockfile',
+  'D:\\Riot Games\\League of Legends\\lockfile',
+];
+
+/**
+ * Tries to discover LCU config by reading lockfile
+ */
+function discoverLcuConfig() {
+  for (const lockfilePath of LOCKFILE_PATHS) {
+    try {
+      if (fs.existsSync(lockfilePath)) {
+        const content = fs.readFileSync(lockfilePath, 'utf8');
+        const parts = content.trim().split(':');
+        if (parts.length >= 4) {
+          const config = {
+            pid: parseInt(parts[1], 10),
+            port: parseInt(parts[2], 10),
+            password: parts[3]
+          };
+          console.log(`[Proxy] Found League client at ${lockfilePath} - Port: ${config.port}`);
+          return config;
+        }
+      }
+    } catch (error) {
+      // File doesn't exist or can't be read, continue
+    }
+  }
+  return null;
+}
+
+/**
+ * Periodically check for League client
+ */
+function watchForLeagueClient() {
+  const checkInterval = setInterval(() => {
+    if (!lcuConfig) {
+      const config = discoverLcuConfig();
+      if (config) {
+        lcuConfig = config;
+        console.log('[Proxy] League client connected automatically');
+      }
+    } else {
+      // Check if League is still running by trying to read lockfile
+      let stillRunning = false;
+      for (const lockfilePath of LOCKFILE_PATHS) {
+        try {
+          if (fs.existsSync(lockfilePath)) {
+            stillRunning = true;
+            break;
+          }
+        } catch {
+          // Continue checking
+        }
+      }
+      if (!stillRunning) {
+        console.log('[Proxy] League client disconnected');
+        lcuConfig = null;
+      }
+    }
+  }, 3000);
+
+  return () => clearInterval(checkInterval);
+}
+
+// Try to discover on startup
+lcuConfig = discoverLcuConfig();
+if (lcuConfig) {
+  console.log('[Proxy] Auto-discovered League client on startup');
+} else {
+  console.log('[Proxy] League client not found - will watch for it...');
+}
+
+// Start watching for League client
+watchForLeagueClient();
 
 const server = http.createServer((req, res) => {
   // Enable CORS for Overwolf extension
@@ -32,6 +115,7 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         lcuConfig = JSON.parse(body);
+        console.log('[Proxy] LCU config set via /set-config - Port:', lcuConfig.port);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (error) {
@@ -42,9 +126,33 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Check status endpoint
+  if (url.pathname === '/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      connected: lcuConfig !== null,
+      port: lcuConfig?.port || null
+    }));
+    return;
+  }
+
+  // Auto-discover endpoint
+  if (url.pathname === '/discover') {
+    const config = discoverLcuConfig();
+    if (config) {
+      lcuConfig = config;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, port: config.port }));
+    } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'League client not found' }));
+    }
+    return;
+  }
+
   if (!lcuConfig) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'LCU config not set' }));
+    res.end(JSON.stringify({ error: 'LCU config not set - League client not running or not detected' }));
     return;
   }
 

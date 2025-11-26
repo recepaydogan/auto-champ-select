@@ -13,7 +13,8 @@
   },
   "permissions": [
     "GameInfo",
-    "FileSystem"
+    "FileSystem",
+    "Network"
   ],
   "data": {
     "developer": {

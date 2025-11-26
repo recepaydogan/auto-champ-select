@@ -1,6 +1,7 @@
+import 'react-native-get-random-values'; // Must be imported first for crypto polyfill
 import React, { useState, useEffect } from 'react'
 import { StyleSheet, View } from 'react-native'
-import { supabase } from './src/lib/supabase'
+import { supabase, isSupabaseConfigured } from './src/lib/supabase'
 import Auth from './src/components/auth'
 import HomeScreen from './src/screens/home-screen'
 import { Session } from '@supabase/supabase-js'
@@ -9,6 +10,14 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null)
 
   useEffect(() => {
+    // Skip auth if Supabase is not configured
+    if (!isSupabaseConfigured) {
+      console.warn('Supabase not configured - skipping authentication');
+      // Create a dummy session to bypass auth
+      setSession({ user: { id: 'guest' } } as Session);
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
     })

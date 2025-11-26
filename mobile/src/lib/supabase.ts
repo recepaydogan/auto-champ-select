@@ -2,15 +2,33 @@ import 'react-native-url-polyfill/auto'
 import { createClient } from '@supabase/supabase-js'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 
-// TODO: Replace with your actual Supabase URL and Anon Key
-const SUPABASE_URL = 'YOUR_SUPABASE_URL';
-const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+// Get Supabase configuration from environment variables
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: {
-        storage: AsyncStorage,
-        autoRefreshToken: true,
-        persistSession: true,
-        detectSessionInUrl: false,
-    },
-})
+// Check if Supabase is properly configured
+export const isSupabaseConfigured = 
+    SUPABASE_URL && 
+    SUPABASE_ANON_KEY && 
+    SUPABASE_URL !== '' && 
+    SUPABASE_ANON_KEY !== '' &&
+    SUPABASE_URL.startsWith('http');
+
+// Only create client if properly configured, otherwise use a minimal client
+export const supabase = isSupabaseConfigured
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+          auth: {
+              storage: AsyncStorage,
+              autoRefreshToken: true,
+              persistSession: true,
+              detectSessionInUrl: false,
+          },
+      })
+    : createClient('https://placeholder.supabase.co', 'placeholder-anon-key', {
+          auth: {
+              storage: AsyncStorage,
+              autoRefreshToken: false,
+              persistSession: false,
+              detectSessionInUrl: false,
+          },
+      })
