@@ -37,7 +37,7 @@ function discoverLcuConfig() {
             port: parseInt(parts[2], 10),
             password: parts[3]
           };
-          console.log(`[Proxy] Found League client at ${lockfilePath} - Port: ${config.port}`);
+          console.log(`[Proxy] Found lockfile at ${lockfilePath} - Port: ${config.port}`);
           return config;
         }
       }
@@ -49,31 +49,66 @@ function discoverLcuConfig() {
 }
 
 /**
+ * Verifies that the LCU is actually responding (not just a stale lockfile)
+ */
+function verifyLcuConnection(config) {
+  return new Promise((resolve) => {
+    const token = Buffer.from(`riot:${config.password}`).toString('base64');
+    
+    const options = {
+      hostname: '127.0.0.1',
+      port: config.port,
+      path: '/lol-summoner/v1/current-summoner',
+      method: 'GET',
+      headers: {
+        'Authorization': `Basic ${token}`,
+        'Accept': 'application/json',
+      },
+      rejectUnauthorized: false,
+      timeout: 2000
+    };
+
+    const req = https.request(options, (res) => {
+      // Any response (even 4xx) means LCU is running
+      resolve(true);
+      req.destroy();
+    });
+
+    req.on('error', () => {
+      resolve(false);
+    });
+
+    req.on('timeout', () => {
+      resolve(false);
+      req.destroy();
+    });
+
+    req.end();
+  });
+}
+
+/**
  * Periodically check for League client
  */
 function watchForLeagueClient() {
-  const checkInterval = setInterval(() => {
+  const checkInterval = setInterval(async () => {
     if (!lcuConfig) {
       const config = discoverLcuConfig();
       if (config) {
-        lcuConfig = config;
-        console.log('[Proxy] League client connected automatically');
-      }
-    } else {
-      // Check if League is still running by trying to read lockfile
-      let stillRunning = false;
-      for (const lockfilePath of LOCKFILE_PATHS) {
-        try {
-          if (fs.existsSync(lockfilePath)) {
-            stillRunning = true;
-            break;
-          }
-        } catch {
-          // Continue checking
+        // Verify the connection actually works before reporting as connected
+        const isAlive = await verifyLcuConnection(config);
+        if (isAlive) {
+          lcuConfig = config;
+          console.log('[Proxy] League client connected - Port:', config.port);
+        } else {
+          console.log('[Proxy] Found stale lockfile, League not actually running');
         }
       }
-      if (!stillRunning) {
-        console.log('[Proxy] League client disconnected');
+    } else {
+      // Verify League is still running by making a test request
+      const isAlive = await verifyLcuConnection(lcuConfig);
+      if (!isAlive) {
+        console.log('[Proxy] League client disconnected (connection lost)');
         lcuConfig = null;
       }
     }
@@ -83,15 +118,25 @@ function watchForLeagueClient() {
 }
 
 // Try to discover on startup
-lcuConfig = discoverLcuConfig();
-if (lcuConfig) {
-  console.log('[Proxy] Auto-discovered League client on startup');
-} else {
-  console.log('[Proxy] League client not found - will watch for it...');
+async function initializeLcuDetection() {
+  const config = discoverLcuConfig();
+  if (config) {
+    const isAlive = await verifyLcuConnection(config);
+    if (isAlive) {
+      lcuConfig = config;
+      console.log('[Proxy] League client connected on startup - Port:', config.port);
+    } else {
+      console.log('[Proxy] Found lockfile but League not running (stale lockfile)');
+    }
+  } else {
+    console.log('[Proxy] League client not found - will watch for it...');
+  }
+  
+  // Start watching for League client
+  watchForLeagueClient();
 }
 
-// Start watching for League client
-watchForLeagueClient();
+initializeLcuDetection();
 
 const server = http.createServer((req, res) => {
   // Enable CORS for Overwolf extension
@@ -126,13 +171,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Check status endpoint
+  // Check status endpoint - verify connection is still alive
   if (url.pathname === '/status') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      connected: lcuConfig !== null,
-      port: lcuConfig?.port || null
-    }));
+    (async () => {
+      let isConnected = false;
+      if (lcuConfig) {
+        isConnected = await verifyLcuConnection(lcuConfig);
+        if (!isConnected) {
+          console.log('[Proxy] Status check: League disconnected');
+          lcuConfig = null;
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        connected: isConnected,
+        port: lcuConfig?.port || null
+      }));
+    })();
     return;
   }
 

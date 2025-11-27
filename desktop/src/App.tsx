@@ -1,19 +1,50 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from './supabaseClient'
 import Login from './components/login'
 import { type Session } from '@supabase/supabase-js'
-import QRCode from './components/QRCode'
 import ConnectionApproval from './components/ConnectionApproval'
+import ConnectionStatus, { type ConnectionStatusState } from './components/ConnectionStatus'
+import CustomModal, { type CustomModalButton } from './components/CustomModal'
 import { getBridgeManager } from './bridge/bridgeManager'
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
-  const [bridgeCode, setBridgeCode] = useState<string | null>(null)
   const [isConnected, setIsConnected] = useState(false)
+  const [isConnecting, setIsConnecting] = useState(false)
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatusState>({
+    riftConnected: false,
+    mobileConnected: false,
+    lcuConnected: false
+  })
   const [pendingConnection, setPendingConnection] = useState<{ device: string; browser: string; identity: string } | null>(null)
   const [pendingConnectionIdentity, setPendingConnectionIdentity] = useState<string | null>(null)
   const [pendingConnectionResolve, setPendingConnectionResolve] = useState<((approved: boolean) => void) | null>(null)
+  
+  // Custom modal state
+  const [modalVisible, setModalVisible] = useState(false)
+  const [modalConfig, setModalConfig] = useState<{
+    title: string;
+    message?: string;
+    type?: 'info' | 'success' | 'warning' | 'error';
+    buttons?: CustomModalButton[];
+  }>({ title: '' })
+
+  // Custom alert function
+  const showAlert = useCallback((
+    title: string,
+    message?: string,
+    buttons?: CustomModalButton[],
+    type?: 'info' | 'success' | 'warning' | 'error'
+  ) => {
+    setModalConfig({
+      title,
+      message,
+      type: type || 'info',
+      buttons: buttons || [{ text: 'OK', onClick: () => {}, variant: 'primary' }]
+    })
+    setModalVisible(true)
+  }, [])
 
   useEffect(() => {
     // Auth setup
@@ -34,7 +65,7 @@ function App() {
     }
   }, [])
 
-  // Listen for bridge connection requests and messages
+  // Listen for bridge connection requests
   useEffect(() => {
     if (!session) return
 
@@ -62,43 +93,45 @@ function App() {
 
     overwolf.windows.onMessageReceived.addListener(messageListener);
 
-    // Check bridge code periodically
-    const checkBridgeCode = () => {
-      try {
-        const bridge = getBridgeManager()
-        const code = bridge.getCode()
-        if (code) {
-          setBridgeCode(code)
-        }
-      } catch {
-        // Bridge not initialized yet
-      }
-    }
-
-    const interval = setInterval(checkBridgeCode, 1000)
-    checkBridgeCode()
-
     return () => {
       overwolf.windows.onMessageReceived.removeListener(messageListener)
-      clearInterval(interval)
     }
   }, [session])
 
-  // Connection request callback is now set up in handleConnect before bridge initialization
+  // Auto-connect when session is available
+  useEffect(() => {
+    if (session && !isConnected && !isConnecting) {
+      handleConnect()
+    }
+  }, [session])
 
   const handleConnect = async () => {
+    if (!session?.user?.id) {
+      console.error('[App] No user session available')
+      return
+    }
+
+    setIsConnecting(true)
+    
     try {
-    const bridge = getBridgeManager()
+      const bridge = getBridgeManager()
+      
+      // Set up status change callback
+      bridge.setStatusChangeCallback((status) => {
+        setConnectionStatus(status)
+      })
       
       // Set up connection request callback BEFORE initializing
-    bridge.setConnectionRequestCallback(async (deviceInfo) => {
-      return new Promise<boolean>((resolve) => {
+      bridge.setConnectionRequestCallback(async (deviceInfo) => {
+        return new Promise<boolean>((resolve) => {
           console.log('[App] Connection request received:', deviceInfo)
-        setPendingConnection(deviceInfo)
-        setPendingConnectionIdentity(deviceInfo.identity)
-        setPendingConnectionResolve(() => resolve)
+          setPendingConnection(deviceInfo)
+          setPendingConnectionIdentity(deviceInfo.identity)
+          setPendingConnectionResolve(() => (approved: boolean) => {
+            resolve(approved)
+          })
+        })
       })
-    })
 
       // Use import.meta.env for Vite, fallback to hardcoded values
       // Use 127.0.0.1 instead of localhost for Overwolf compatibility
@@ -107,17 +140,17 @@ function App() {
       
       await bridge.initialize({
         riftUrl,
-        jwtSecret
+        jwtSecret,
+        userId: session.user.id
       })
 
-      const code = bridge.getCode()
-      if (code) {
-        setBridgeCode(code)
-        setIsConnected(true)
-      }
+      setIsConnected(true)
+      console.log('[App] Connected to Rift server for user:', session.user.id)
     } catch (error: any) {
       console.error('[App] Failed to connect bridge:', error)
-      alert('Failed to connect bridge: ' + error.message)
+      showAlert('Connection Failed', error.message || 'Failed to connect to server', undefined, 'error')
+    } finally {
+      setIsConnecting(false)
     }
   }
 
@@ -217,42 +250,38 @@ function App() {
       </div>
 
       <div className="flex-1 flex items-center justify-center p-8">
-        {!isConnected || !bridgeCode ? (
+        {isConnecting ? (
+          <div className="flex flex-col items-center gap-4">
+            <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-neutral-400">Connecting to server...</p>
+          </div>
+        ) : isConnected ? (
+          <ConnectionStatus
+            status={connectionStatus}
+            userEmail={session?.user?.email}
+            onDisconnect={() => {
+              setIsConnected(false)
+              setConnectionStatus({
+                riftConnected: false,
+                mobileConnected: false,
+                lcuConnected: false
+              })
+              const bridge = getBridgeManager()
+              bridge.disconnect()
+            }}
+          />
+        ) : (
           <div className="flex flex-col items-center gap-6 max-w-md w-full">
-            <h1 className="text-3xl font-bold text-white text-center">Auto Champ Select</h1>
+            <div className="text-5xl">🔌</div>
+            <h1 className="text-2xl font-bold text-white text-center">Not Connected</h1>
             <p className="text-neutral-400 text-center">
-              Connect your mobile device to control League of Legends from your phone.
+              Connect to enable mobile control for League of Legends.
             </p>
             <button
               onClick={handleConnect}
               className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 px-6 rounded-xl transition-all shadow-lg shadow-indigo-900/20"
             >
               Connect
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-6 max-w-md w-full">
-            <h1 className="text-3xl font-bold text-white text-center">Connection Code</h1>
-            <p className="text-neutral-400 text-center">
-              Enter this code in your mobile app or scan the QR code to connect.
-            </p>
-            
-            <div className="text-6xl font-bold text-indigo-400 tracking-wider bg-neutral-900/50 px-8 py-4 rounded-xl border border-neutral-800">
-              {bridgeCode}
-            </div>
-
-            <QRCode value={bridgeCode} size={200} />
-
-            <button
-              onClick={() => {
-                setIsConnected(false)
-                setBridgeCode(null)
-                const bridge = getBridgeManager()
-                bridge.disconnect()
-              }}
-              className="text-neutral-400 hover:text-white text-sm"
-            >
-              Disconnect
             </button>
           </div>
         )}
@@ -266,6 +295,15 @@ function App() {
           </button>
         </div>
       </div>
+
+      <CustomModal
+        isOpen={modalVisible}
+        title={modalConfig.title}
+        message={modalConfig.message}
+        type={modalConfig.type}
+        buttons={modalConfig.buttons}
+        onClose={() => setModalVisible(false)}
+      />
     </div>
   )
 }

@@ -9,39 +9,58 @@ export interface LCUResult {
   content: any;
 }
 
+export interface DesktopStatus {
+  riftConnected: boolean;
+  mobileConnected: boolean;
+  lcuConnected: boolean;
+}
+
 export class LCUBridge {
   private socket: RiftSocket | null = null;
   private idCounter = 0;
   private pendingRequests: Map<number, { resolve: (result: LCUResult) => void; reject: (error: Error) => void }> = new Map();
   private observers: Map<string, (result: LCUResult) => void> = new Map();
+  private statusCallback: ((status: DesktopStatus) => void) | null = null;
+  private disconnectCallback: ((reason: string) => void) | null = null;
+  private isConnected = false;
+  private desktopStatus: DesktopStatus = {
+    riftConnected: false,
+    mobileConnected: false,
+    lcuConnected: false
+  };
 
   /**
-   * Connects to Rift server
+   * Connects to Rift server using Supabase user ID
    */
-  async connect(code: string, riftUrl: string): Promise<void> {
+  async connect(userId: string, riftUrl: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.socket = new RiftSocket(code, riftUrl);
+      let resolved = false;
       
-      // Handle connection timeout
-      const timeoutId = setTimeout(() => {
-        if (this.socket && (this.socket.state === 0 || this.socket.state === 1 || this.socket.state === 2)) {
-          // Still connecting or failed
-          let errorMessage = 'Connection timeout. Failed to connect to Rift server';
-          
-          if (riftUrl.includes('localhost') || riftUrl.includes('127.0.0.1')) {
-            errorMessage = 'Connection timeout. Cannot use localhost on a physical device. Please use your computer\'s IP address (e.g., ws://192.168.1.100:51001). Update EXPO_PUBLIC_RIFT_URL in your .env file.';
-          } else {
-            errorMessage = 'Connection timeout. Make sure:\n1. Desktop app is running\n2. Both devices are on the same WiFi network\n3. Firewall allows port 51001';
-          }
-          
+      const handleReject = (errorMessage: string) => {
+        if (!resolved) {
+          resolved = true;
           reject(new Error(errorMessage));
         }
-      }, 10000);
+      };
+
+      const handleResolve = () => {
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+      };
+
+      try {
+        this.socket = new RiftSocket(userId, riftUrl);
+      } catch (error: any) {
+        handleReject(`Failed to create connection: ${error.message}`);
+        return;
+      }
 
       this.socket.onopen = () => {
-        clearTimeout(timeoutId);
         console.log('[LCUBridge] Connected to Rift');
-        resolve();
+        this.isConnected = true;
+        handleResolve();
       };
 
       this.socket.onmessage = (msg: { data: string }) => {
@@ -49,28 +68,45 @@ export class LCUBridge {
       };
 
       this.socket.onclose = () => {
-        clearTimeout(timeoutId);
-        console.log('[LCUBridge] Disconnected from Rift');
+        console.log('[LCUBridge] Disconnected from Rift, state:', this.socket?.state, 'wasConnected:', this.isConnected);
+        
+        const wasConnected = this.isConnected;
+        this.isConnected = false;
+        
         // Reject all pending requests
-        for (const [id, { reject }] of this.pendingRequests.entries()) {
-          reject(new Error('Connection closed'));
+        for (const [, { reject: rejectRequest }] of this.pendingRequests.entries()) {
+          rejectRequest(new Error('Connection closed'));
         }
         this.pendingRequests.clear();
+        this.observers.clear();
         
-        // If we were trying to connect and it closed, reject the connection promise
-        if (this.socket?.state === 1 || this.socket?.state === 2) { // FAILED states
-          let errorMessage = 'Failed to connect to Rift server';
-          
-          // Provide helpful error message based on the URL
-          if (riftUrl.includes('localhost') || riftUrl.includes('127.0.0.1')) {
-            errorMessage = 'Cannot connect using localhost on a physical device. Please use your computer\'s IP address (e.g., ws://192.168.1.100:51001). Update EXPO_PUBLIC_RIFT_URL in your .env file.';
-          } else {
-            errorMessage = 'Failed to connect. Make sure:\n1. Desktop app is running\n2. Both devices are on the same WiFi network\n3. Firewall allows port 51001';
-          }
-          
-          reject(new Error(errorMessage));
+        // Provide helpful error message based on state and URL
+        let errorMessage = 'Connection closed';
+        
+        if (this.socket?.state === 1) { // FAILED_NO_DESKTOP
+          errorMessage = 'Desktop app not found. Make sure:\n1. Desktop app is running\n2. You are signed in with the same account';
+        } else if (this.socket?.state === 2) { // FAILED_DESKTOP_DENY
+          errorMessage = 'Connection was denied by the desktop app.';
+        } else if (riftUrl.includes('localhost') || riftUrl.includes('127.0.0.1')) {
+          errorMessage = 'Cannot connect using localhost on a physical device. Please use your computer\'s IP address (e.g., 192.168.1.100:51001).';
         }
+        
+        // If we were connected and now disconnected, notify via callback
+        if (wasConnected && this.disconnectCallback) {
+          this.disconnectCallback(errorMessage);
+        }
+        
+        handleReject(errorMessage);
       };
+
+      // Also add a fallback timeout for truly stuck connections (network issues)
+      // This is just a safety net - normally onclose handles failures
+      setTimeout(() => {
+        if (!resolved && this.socket) {
+          console.log('[LCUBridge] Safety timeout triggered, state:', this.socket.state);
+          handleReject('Connection is taking too long. Please check your network and try again.');
+        }
+      }, 60000); // 60 second safety net
     });
   }
 
@@ -142,6 +178,13 @@ export class LCUBridge {
         if (handler) {
           handler({ status, content });
         }
+      } else if (msg[0] === MobileOpcode.STATUS) {
+        // Status update from desktop
+        const [, status] = msg;
+        this.desktopStatus = status;
+        if (this.statusCallback) {
+          this.statusCallback(status);
+        }
       }
     } catch (error) {
       console.error('[LCUBridge] Error handling message:', error);
@@ -149,9 +192,10 @@ export class LCUBridge {
   }
 
   /**
-   * Disconnects from Rift
+   * Disconnects from Rift (manual disconnect, won't trigger disconnect callback)
    */
   disconnect() {
+    this.isConnected = false; // Set before close to prevent callback
     if (this.socket) {
       this.socket.close();
       this.socket = null;
@@ -163,8 +207,41 @@ export class LCUBridge {
   /**
    * Checks if connected
    */
-  isConnected(): boolean {
-    return this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+  getIsConnected(): boolean {
+    return this.isConnected && this.socket !== null && this.socket.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Sets the status callback
+   */
+  setStatusCallback(callback: (status: DesktopStatus) => void): void {
+    this.statusCallback = callback;
+  }
+
+  /**
+   * Sets the disconnect callback (called when connection drops after being connected)
+   */
+  setDisconnectCallback(callback: (reason: string) => void): void {
+    this.disconnectCallback = callback;
+  }
+
+  /**
+   * Gets the current desktop status
+   */
+  getDesktopStatus(): DesktopStatus {
+    return this.desktopStatus;
+  }
+
+  /**
+   * Requests current status from desktop
+   */
+  requestStatus(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const message = JSON.stringify([MobileOpcode.STATUS_REQUEST]);
+    this.socket.send(message).catch(console.error);
   }
 }
 
@@ -176,5 +253,39 @@ export function getLCUBridge(): LCUBridge {
     lcuBridgeInstance = new LCUBridge();
   }
   return lcuBridgeInstance;
+}
+
+/**
+ * Check if desktop is online for a user (before attempting WebSocket connection)
+ */
+export async function checkDesktopOnline(userId: string, riftHttpUrl: string): Promise<{
+  desktopOnline: boolean;
+  registered: boolean;
+  error?: string;
+}> {
+  try {
+    const response = await fetch(`${riftHttpUrl}/status/${userId}`);
+    
+    if (!response.ok) {
+      return {
+        desktopOnline: false,
+        registered: false,
+        error: `Server error: ${response.status}`
+      };
+    }
+
+    const data = await response.json();
+    return {
+      desktopOnline: data.desktopOnline || false,
+      registered: data.registered || false
+    };
+  } catch (error: any) {
+    // Network error - server probably not reachable
+    return {
+      desktopOnline: false,
+      registered: false,
+      error: error.message || 'Cannot reach server'
+    };
+  }
 }
 

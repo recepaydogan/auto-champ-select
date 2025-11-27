@@ -3,7 +3,7 @@ dotenv.config();
 
 import * as db from "./database.js";
 import * as http from "http";
-import app from "./web.js";
+import { createApp } from "./web.js";
 import WebSocketManager from "./sockets.js";
 
 const PORT = process.env.PORT || 51001;
@@ -18,9 +18,10 @@ const PORT = process.env.PORT || 51001;
     console.log("[+] Starting rift...");
     await db.create();
 
+    const sockets = new WebSocketManager();
+    const app = createApp(sockets);
     const server = http.createServer(app);
 
-    const sockets = new WebSocketManager();
     server.on("upgrade", sockets.handleUpgradeRequest);
 
     console.log("[+] Listening on 0.0.0.0:" + PORT + "... ^C to exit.");

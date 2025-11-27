@@ -10,7 +10,6 @@ import { getBridgeManager } from '../bridge/bridgeManager'
 const Background = () => {
   const [session, setSession] = useState<Session | null>(null);
   const [autoAccept] = useState(true);
-  const [bridgeCode] = useState<string | null>(null);
 
   useEffect(() => {
     // 1. Handle Auth Session
@@ -519,13 +518,6 @@ const Background = () => {
       <h1>Background Window</h1>
       <p>Hidden window handling game events.</p>
       <p>User: {session?.user?.email ?? 'Not logged in'}</p>
-      {bridgeCode && (
-        <div>
-          <h2>Mobile Connection Code</h2>
-          <p style={{ fontSize: '24px', fontWeight: 'bold' }}>{bridgeCode}</p>
-          <p>Enter this code in the mobile app to connect</p>
-        </div>
-      )}
     </div>
   )
 }

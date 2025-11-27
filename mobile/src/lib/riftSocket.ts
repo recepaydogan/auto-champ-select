@@ -39,7 +39,9 @@ export const MobileOpcode = {
   UNSUBSCRIBE: 6,
   REQUEST: 7,
   RESPONSE: 8,
-  UPDATE: 9
+  UPDATE: 9,
+  STATUS: 10,          // Desktop -> Mobile: status update
+  STATUS_REQUEST: 11   // Mobile -> Desktop: request current status
 } as const;
 
 export type MobileOpcodeValue = typeof MobileOpcode[keyof typeof MobileOpcode];
@@ -55,7 +57,7 @@ export default class RiftSocket {
   private key: CryptoKey | Uint8Array | null = null; // CryptoKey for web, Uint8Array for React Native
   private encrypted = false;
 
-  constructor(private code: string, private riftUrl: string) {
+  constructor(private userId: string, private riftUrl: string) {
     // Convert HTTP/HTTPS URL to WebSocket URL
     let wsUrl = riftUrl;
     if (riftUrl.startsWith('http://')) {
@@ -67,7 +69,7 @@ export default class RiftSocket {
       wsUrl = `ws://${riftUrl}`;
     }
     
-    wsUrl = `${wsUrl}/mobile?code=${code}`;
+    wsUrl = `${wsUrl}/mobile?userId=${userId}`;
     console.log('[RiftSocket] Connecting to:', wsUrl);
     
     this.socket = new WebSocket(wsUrl);
@@ -141,8 +143,8 @@ export default class RiftSocket {
    * Handles WebSocket open
    */
   private handleOpen = () => {
-    // Request the public key for our target
-    this.socket?.send(JSON.stringify([RiftOpcode.CONNECT, this.code]));
+    // Request the public key for our target user
+    this.socket?.send(JSON.stringify([RiftOpcode.CONNECT, this.userId]));
   };
 
   /**
@@ -175,10 +177,14 @@ export default class RiftSocket {
    */
   private handleError = (error: any) => {
     console.error('[RiftSocket] WebSocket error:', error);
-    // If we haven't opened yet and get an error, mark as failed
-    if (this.readyState === WebSocket.CONNECTING) {
+    // If we haven't opened yet and get an error, mark as failed and close
+    if (this.readyState === WebSocket.CONNECTING || this.state === RiftSocketState.CONNECTING) {
       this.readyState = WebSocket.CLOSED as any;
       this.state = RiftSocketState.FAILED_NO_DESKTOP;
+      // Trigger onclose to notify lcuBridge of the failure
+      if (this.onclose) {
+        this.onclose();
+      }
     }
   };
 

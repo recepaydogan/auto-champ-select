@@ -22,7 +22,9 @@ export const MobileOpcode = {
     UNSUBSCRIBE: 6,
     REQUEST: 7,
     RESPONSE: 8,
-    UPDATE: 9
+    UPDATE: 9,
+    STATUS: 10,          // Desktop -> Mobile: status update
+    STATUS_REQUEST: 11   // Mobile -> Desktop: request current status
 } as const;
 
 export type RiftOpcodeValue = typeof RiftOpcode[keyof typeof RiftOpcode];

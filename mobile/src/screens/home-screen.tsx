@@ -1,16 +1,16 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Alert, ScrollView, ActivityIndicator } from 'react-native';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
 import { Button } from '@rneui/themed';
 import { supabase } from '../lib/supabase';
 import { Session } from '@supabase/supabase-js';
-import CodeEntry from '../components/CodeEntry';
 import CreateLobby from '../components/CreateLobby';
-import { getLCUBridge } from '../lib/lcuBridge';
-import { RIFT_URL } from '../config';
+import { getLCUBridge, checkDesktopOnline, type DesktopStatus } from '../lib/lcuBridge';
+import { RIFT_URL, RIFT_HTTP_URL } from '../config';
 import { RiftSocketState, type RiftSocketStateValue } from '../lib/riftSocket';
+import CustomModal, { type CustomModalButton } from '../components/CustomModal';
+import ConnectionStatus, { type ConnectionStatusState } from '../components/ConnectionStatus';
 
 export default function HomeScreen({ session }: { session: Session }) {
-    const [code, setCode] = useState('');
     const [connectionState, setConnectionState] = useState<RiftSocketStateValue>(RiftSocketState.DISCONNECTED);
     const [connected, setConnected] = useState(false);
     const [gamePhase, setGamePhase] = useState<string>('None');
@@ -20,19 +20,129 @@ export default function HomeScreen({ session }: { session: Session }) {
     const [loading, setLoading] = useState(false);
     const [showCreateLobby, setShowCreateLobby] = useState(false);
     const [connectionAborted, setConnectionAborted] = useState(false);
+    
+    // Custom modal state
+    const [modalVisible, setModalVisible] = useState(false);
+    const [modalConfig, setModalConfig] = useState<{
+        title: string;
+        message?: string;
+        type?: 'info' | 'success' | 'warning' | 'error';
+        buttons?: CustomModalButton[];
+    }>({ title: '' });
+
+    // Desktop status tracking (after connection)
+    const [desktopStatus, setDesktopStatus] = useState<DesktopStatus>({
+        riftConnected: false,
+        mobileConnected: false,
+        lcuConnected: false
+    });
+
+    // Pre-connection desktop status (before connecting)
+    const [isDesktopOnline, setIsDesktopOnline] = useState<boolean | null>(null); // null = checking
+    const [checkingStatus, setCheckingStatus] = useState(true);
+    const [serverReachable, setServerReachable] = useState(true);
+    const statusCheckInterval = useRef<NodeJS.Timeout | null>(null);
 
     const lcuBridge = getLCUBridge();
 
+    // Custom alert function
+    const showAlert = useCallback((
+        title: string,
+        message?: string,
+        buttons?: CustomModalButton[],
+        type?: 'info' | 'success' | 'warning' | 'error'
+    ) => {
+        setModalConfig({
+            title,
+            message,
+            type: type || 'info',
+            buttons: buttons || [{ text: 'OK', onPress: () => {}, style: 'primary' }]
+        });
+        setModalVisible(true);
+    }, []);
+
+    // Check desktop status periodically (before connecting)
+    const checkStatus = useCallback(async () => {
+        if (!session?.user?.id) return;
+        
+        try {
+            const result = await checkDesktopOnline(session.user.id, RIFT_HTTP_URL);
+            setIsDesktopOnline(result.desktopOnline);
+            setServerReachable(!result.error);
+            setCheckingStatus(false);
+        } catch (error) {
+            setIsDesktopOnline(false);
+            setServerReachable(false);
+            setCheckingStatus(false);
+        }
+    }, [session?.user?.id]);
+
+    // Set up callbacks once on mount
     useEffect(() => {
-        // Cleanup on unmount
+        // Set up status callback
+        lcuBridge.setStatusCallback((status) => {
+            setDesktopStatus(status);
+        });
+
+        // Cleanup on unmount only
         return () => {
             lcuBridge.disconnect();
         };
     }, []);
 
-    const handleCodeComplete = async (enteredCode: string) => {
-        if (enteredCode.length !== 6 || !/^\d{6}$/.test(enteredCode)) {
-            Alert.alert('Invalid Code', 'Please enter a valid 6-digit code');
+    // Set up disconnect callback (needs access to showAlert and checkStatus)
+    useEffect(() => {
+        lcuBridge.setDisconnectCallback((reason) => {
+            console.log('[HomeScreen] Desktop disconnected:', reason);
+            setConnected(false);
+            setConnectionState(RiftSocketState.DISCONNECTED);
+            setGamePhase('None');
+            setLobby(null);
+            setReadyCheck(null);
+            setChampSelect(null);
+            setDesktopStatus({
+                riftConnected: false,
+                mobileConnected: false,
+                lcuConnected: false
+            });
+            
+            // Show disconnection alert
+            showAlert(
+                'Disconnected',
+                'Connection to desktop was lost. The desktop app may have closed.',
+                [{ text: 'OK', onPress: () => {}, style: 'primary' }],
+                'warning'
+            );
+        });
+    }, [showAlert]);
+
+    // Handle desktop status checking (before connection)
+    useEffect(() => {
+        if (!connected) {
+            // Check immediately
+            checkStatus();
+            // Set up interval
+            statusCheckInterval.current = setInterval(checkStatus, 5000);
+        } else {
+            // Connected - stop checking
+            if (statusCheckInterval.current) {
+                clearInterval(statusCheckInterval.current);
+                statusCheckInterval.current = null;
+            }
+        }
+
+        // Cleanup interval on unmount or when connected changes
+        return () => {
+            if (statusCheckInterval.current) {
+                clearInterval(statusCheckInterval.current);
+                statusCheckInterval.current = null;
+            }
+        };
+    }, [connected, checkStatus]);
+
+    const handleConnect = async () => {
+        if (!session?.user?.id) {
+            showAlert('Error', 'No user session available', undefined, 'error');
             return;
         }
 
@@ -41,7 +151,8 @@ export default function HomeScreen({ session }: { session: Session }) {
         setConnectionAborted(false);
 
         try {
-            await lcuBridge.connect(enteredCode, RIFT_URL);
+            // Connect using Supabase user ID
+            await lcuBridge.connect(session.user.id, RIFT_URL);
             
             // Check if connection was aborted
             if (connectionAborted) {
@@ -52,12 +163,21 @@ export default function HomeScreen({ session }: { session: Session }) {
             setConnected(true);
             setConnectionState(RiftSocketState.CONNECTED);
             
+            // Stop polling for desktop status since we're now connected
+            if (statusCheckInterval.current) {
+                clearInterval(statusCheckInterval.current);
+                statusCheckInterval.current = null;
+            }
+            
+            // Request initial status from desktop
+            lcuBridge.requestStatus();
+            
             // Subscribe to LCU endpoints
             setupLCUObservers();
         } catch (error: any) {
             if (!connectionAborted) {
                 console.error('Failed to connect:', error);
-                Alert.alert('Connection Failed', error.message || 'Failed to connect to desktop');
+                showAlert('Connection Failed', error.message || 'Failed to connect to desktop', undefined, 'error');
                 setConnectionState(RiftSocketState.DISCONNECTED);
                 setConnected(false);
             }
@@ -72,7 +192,6 @@ export default function HomeScreen({ session }: { session: Session }) {
         lcuBridge.disconnect();
         setLoading(false);
         setConnectionState(RiftSocketState.DISCONNECTED);
-        setCode('');
     };
 
     const setupLCUObservers = () => {
@@ -125,36 +244,36 @@ export default function HomeScreen({ session }: { session: Session }) {
     const handleEnterQueue = async () => {
         try {
             await lcuBridge.request('/lol-lobby/v2/lobby/matchmaking/search', 'POST');
-            Alert.alert('Success', 'Entered queue');
+            showAlert('Success', 'Entered queue', undefined, 'success');
         } catch (error: any) {
-            Alert.alert('Error', error.message || 'Failed to enter queue');
+            showAlert('Error', error.message || 'Failed to enter queue', undefined, 'error');
         }
     };
 
     const handleCancelQueue = async () => {
         try {
             await lcuBridge.request('/lol-lobby/v2/lobby/matchmaking/search', 'DELETE');
-            Alert.alert('Success', 'Left queue');
+            showAlert('Success', 'Left queue', undefined, 'success');
         } catch (error: any) {
-            Alert.alert('Error', error.message || 'Failed to leave queue');
+            showAlert('Error', error.message || 'Failed to leave queue', undefined, 'error');
         }
     };
 
     const handleAcceptReadyCheck = async () => {
         try {
             await lcuBridge.request('/lol-matchmaking/v1/ready-check/accept', 'POST');
-            Alert.alert('Success', 'Accepted match');
+            showAlert('Success', 'Accepted match', undefined, 'success');
         } catch (error: any) {
-            Alert.alert('Error', error.message || 'Failed to accept');
+            showAlert('Error', error.message || 'Failed to accept', undefined, 'error');
         }
     };
 
     const handleDeclineReadyCheck = async () => {
         try {
             await lcuBridge.request('/lol-matchmaking/v1/ready-check/decline', 'POST');
-            Alert.alert('Success', 'Declined match');
+            showAlert('Success', 'Declined match', undefined, 'success');
         } catch (error: any) {
-            Alert.alert('Error', error.message || 'Failed to decline');
+            showAlert('Error', error.message || 'Failed to decline', undefined, 'error');
         }
     };
 
@@ -167,7 +286,7 @@ export default function HomeScreen({ session }: { session: Session }) {
             const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
             
             if (!localPlayer) {
-                Alert.alert('Error', 'Could not find local player');
+                showAlert('Error', 'Could not find local player', undefined, 'error');
                 return;
             }
 
@@ -180,14 +299,22 @@ export default function HomeScreen({ session }: { session: Session }) {
                             'PATCH',
                             { championId, completed: true }
                         );
-                        Alert.alert('Success', 'Champion selected');
+                        showAlert('Success', 'Champion selected', undefined, 'success');
                         return;
                     }
                 }
             }
         } catch (error: any) {
-            Alert.alert('Error', error.message || 'Failed to pick champion');
+            showAlert('Error', error.message || 'Failed to pick champion', undefined, 'error');
         }
+    };
+
+    // Build connection status for display
+    const connectionStatus: ConnectionStatusState = {
+        riftConnected: serverReachable,
+        desktopOnline: connected ? true : (isDesktopOnline === true), // Use pre-check before connecting
+        mobileConnected: connected,
+        lcuConnected: connected ? desktopStatus.lcuConnected : false
     };
 
     if (!connected) {
@@ -195,35 +322,20 @@ export default function HomeScreen({ session }: { session: Session }) {
             <View style={styles.container}>
                 <View style={styles.header}>
                     <Text style={styles.title}>Auto Champ Select</Text>
-                    <Text style={styles.subtitle}>Enter the 6-digit code from your desktop app</Text>
                 </View>
                 
-                <View style={styles.codeEntryContainer}>
-                    <CodeEntry
-                        value={code}
-                        onChange={setCode}
-                        onComplete={handleCodeComplete}
-                        loading={loading}
-                    />
-                </View>
-
-                {loading && (
-                    <View style={styles.loadingContainer}>
-                        <ActivityIndicator size="large" color="#4f46e5" />
-                        <Text style={styles.loadingText}>Connecting...</Text>
-                        <Button
-                            title="Cancel"
-                            onPress={handleCancelConnection}
-                            buttonStyle={styles.cancelButton}
-                            titleStyle={styles.cancelButtonText}
-                            containerStyle={styles.cancelButtonContainer}
-                        />
-                    </View>
-                )}
+                <ConnectionStatus
+                    status={connectionStatus}
+                    onConnect={handleConnect}
+                    onDisconnect={() => {
+                        handleCancelConnection();
+                    }}
+                    loading={loading || checkingStatus}
+                />
 
                 {connectionState === RiftSocketState.FAILED_NO_DESKTOP && (
                     <View style={styles.errorContainer}>
-                        <Text style={styles.errorText}>Desktop app not found. Make sure it's running.</Text>
+                        <Text style={styles.errorText}>Desktop app not found. Make sure it's running and you're signed in with the same account.</Text>
                     </View>
                 )}
 
@@ -241,6 +353,15 @@ export default function HomeScreen({ session }: { session: Session }) {
                         titleStyle={styles.signOutButtonText}
                     />
                 </View>
+
+                <CustomModal
+                    visible={modalVisible}
+                    title={modalConfig.title}
+                    message={modalConfig.message}
+                    type={modalConfig.type}
+                    buttons={modalConfig.buttons}
+                    onClose={() => setModalVisible(false)}
+                />
             </View>
         );
     }
@@ -253,10 +374,25 @@ export default function HomeScreen({ session }: { session: Session }) {
                     <View style={styles.statusIndicator} />
                     <Text style={styles.connectedText}>Connected</Text>
                 </View>
-                <Text style={styles.status}>Status: {gamePhase}</Text>
+                <Text style={styles.status}>Game: {gamePhase}</Text>
+                {/* LCU Status Indicator */}
+                <View style={styles.lcuStatusRow}>
+                    <View style={[styles.lcuStatusDot, desktopStatus.lcuConnected ? styles.lcuStatusDotConnected : styles.lcuStatusDotDisconnected]} />
+                    <Text style={[styles.lcuStatusText, !desktopStatus.lcuConnected && styles.lcuStatusTextWarning]}>
+                        {desktopStatus.lcuConnected ? 'League Client Connected' : 'Open League Client'}
+                    </Text>
+                </View>
             </View>
             
             <ScrollView style={styles.scrollView} contentContainerStyle={styles.contentContainer}>
+
+            {/* Warning if LCU not connected */}
+            {!desktopStatus.lcuConnected && (
+                <View style={styles.warningBanner}>
+                    <Text style={styles.warningIcon}>⚠️</Text>
+                    <Text style={styles.warningText}>Open League of Legends on your computer to enable controls</Text>
+                </View>
+            )}
 
             {/* Game Phase Controls */}
             {gamePhase === 'Lobby' && lobby && (
@@ -270,7 +406,7 @@ export default function HomeScreen({ session }: { session: Session }) {
                 </View>
             )}
 
-            {(gamePhase === 'None' || !gamePhase) && (
+            {(gamePhase === 'None' || !gamePhase) && desktopStatus.lcuConnected && (
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Not in Game</Text>
                     <Button
@@ -285,7 +421,7 @@ export default function HomeScreen({ session }: { session: Session }) {
                 visible={showCreateLobby}
                 onClose={() => setShowCreateLobby(false)}
                 onSuccess={() => {
-                    Alert.alert('Success', 'Lobby created successfully');
+                    showAlert('Success', 'Lobby created successfully', undefined, 'success');
                 }}
             />
 
@@ -346,26 +482,35 @@ export default function HomeScreen({ session }: { session: Session }) {
                     />
                 </View>
             )}
-
-                <View style={styles.footer}>
-                    <Button
-                        title="Disconnect"
-                        onPress={() => {
-                            lcuBridge.disconnect();
-                            setConnected(false);
-                            setCode('');
-                        }}
-                        buttonStyle={styles.disconnectButton}
-                        titleStyle={styles.disconnectButtonText}
-                    />
-                    <Button 
-                        title="Sign Out" 
-                        onPress={() => supabase.auth.signOut()} 
-                        buttonStyle={styles.signOutButton}
-                        titleStyle={styles.signOutButtonText}
-                    />
-                </View>
             </ScrollView>
+
+            {/* Bottom Buttons - Fixed at bottom of screen */}
+            <View style={styles.bottomActions}>
+                <Button
+                    title="Disconnect"
+                    onPress={() => {
+                        lcuBridge.disconnect();
+                        setConnected(false);
+                    }}
+                    buttonStyle={styles.disconnectButton}
+                    titleStyle={styles.disconnectButtonText}
+                />
+                <Button
+                    title="Sign Out"
+                    onPress={() => supabase.auth.signOut()}
+                    buttonStyle={styles.signOutButton}
+                    titleStyle={styles.signOutButtonText}
+                />
+            </View>
+
+            <CustomModal
+                visible={modalVisible}
+                title={modalConfig.title}
+                message={modalConfig.message}
+                type={modalConfig.type}
+                buttons={modalConfig.buttons}
+                onClose={() => setModalVisible(false)}
+            />
         </View>
     );
 }
@@ -374,11 +519,12 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: '#0a0a0a', // neutral-950
+        paddingBottom: 0, // Remove default padding since we have bottom actions
     },
     header: {
         paddingTop: 50,
         paddingHorizontal: 20,
-        paddingBottom: 20,
+        paddingBottom: 24,
         backgroundColor: '#171717', // neutral-900
         borderBottomWidth: 1,
         borderBottomColor: '#262626', // neutral-800
@@ -425,14 +571,56 @@ const styles = StyleSheet.create({
     },
     contentContainer: {
         padding: 20,
-        paddingBottom: 40,
+        paddingBottom: 120, // Extra space for bottom buttons
     },
-    codeEntryContainer: {
-        marginTop: 40,
-        marginBottom: 20,
+    connectContainer: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 20,
+    },
+    userInfoBox: {
+        backgroundColor: '#171717',
+        borderRadius: 12,
+        padding: 16,
+        marginBottom: 24,
+        width: '100%',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#262626',
+    },
+    userInfoLabel: {
+        color: '#a3a3a3',
+        fontSize: 14,
+        marginBottom: 4,
+    },
+    userInfoEmail: {
+        color: '#ffffff',
+        fontSize: 16,
+        fontWeight: '500',
+    },
+    connectButton: {
+        backgroundColor: '#4f46e5', // indigo-600
+        borderRadius: 12,
+        paddingVertical: 16,
+        paddingHorizontal: 32,
+    },
+    connectButtonText: {
+        color: '#ffffff',
+        fontSize: 18,
+        fontWeight: 'bold',
+    },
+    connectButtonContainer: {
+        width: '100%',
+        marginBottom: 16,
+    },
+    hintText: {
+        color: '#737373', // neutral-500
+        fontSize: 14,
+        textAlign: 'center',
+        paddingHorizontal: 20,
     },
     loadingContainer: {
-        marginTop: 30,
         alignItems: 'center',
     },
     loadingText: {
@@ -455,7 +643,7 @@ const styles = StyleSheet.create({
         marginTop: 12,
     },
     errorContainer: {
-        marginTop: 20,
+        marginHorizontal: 20,
         padding: 16,
         backgroundColor: '#7f1d1d', // red-900/50
         borderRadius: 8,
@@ -467,9 +655,17 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         fontSize: 14,
     },
-    footer: {
+    bottomActions: {
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
         padding: 20,
+        paddingBottom: 40,
         gap: 12,
+        backgroundColor: '#0a0a0a', // Match container background
+        borderTopWidth: 1,
+        borderTopColor: '#262626', // neutral-800
     },
     disconnectButton: {
         backgroundColor: '#ef4444', // red-500
@@ -493,10 +689,17 @@ const styles = StyleSheet.create({
     },
     section: {
         width: '100%',
-        marginBottom: 20,
-        padding: 15,
+        marginBottom: 16,
+        padding: 18,
         backgroundColor: '#1a1a1a',
-        borderRadius: 8,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#262626',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
     },
     sectionTitle: {
         color: 'white',
@@ -533,5 +736,54 @@ const styles = StyleSheet.create({
     },
     champButton: {
         marginVertical: 5,
+    },
+    lcuStatusRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginTop: 8,
+    },
+    lcuStatusDot: {
+        width: 8,
+        height: 8,
+        borderRadius: 4,
+        marginRight: 8,
+    },
+    lcuStatusDotConnected: {
+        backgroundColor: '#22c55e',
+    },
+    lcuStatusDotDisconnected: {
+        backgroundColor: '#f59e0b',
+    },
+    lcuStatusText: {
+        color: '#a3a3a3',
+        fontSize: 13,
+    },
+    lcuStatusTextWarning: {
+        color: '#f59e0b',
+    },
+    warningBanner: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+        borderWidth: 1,
+        borderColor: 'rgba(245, 158, 11, 0.3)',
+        borderRadius: 12,
+        padding: 16,
+        marginBottom: 16,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 2,
+        elevation: 1,
+    },
+    warningIcon: {
+        fontSize: 18,
+        marginRight: 10,
+    },
+    warningText: {
+        flex: 1,
+        color: '#f59e0b',
+        fontSize: 14,
     },
 });

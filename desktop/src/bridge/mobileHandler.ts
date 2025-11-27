@@ -10,6 +10,8 @@ export interface MobileHandlerCallbacks {
   onSubscribe: (path: string) => void;
   onUnsubscribe: (path: string) => void;
   onConnectionRequest: (deviceInfo: { device: string; browser: string; identity: string }) => Promise<boolean>;
+  onStatusRequest: () => { riftConnected: boolean; mobileConnected: boolean; lcuConnected: boolean };
+  onConnectionApproved?: () => void; // Called when connection is fully established
 }
 
 export class MobileHandler {
@@ -22,6 +24,13 @@ export class MobileHandler {
 
   constructor(callbacks: MobileHandlerCallbacks) {
     this.callbacks = callbacks;
+  }
+
+  /**
+   * Checks if the handler is ready (encrypted connection established)
+   */
+  isReady(): boolean {
+    return this.approved && this.aesKeyBase64 !== null;
   }
 
   /**
@@ -87,6 +96,10 @@ export class MobileHandler {
         return [MobileOpcode.RESPONSE, id, result.status, result.content];
       } else if (opcode === MobileOpcode.VERSION) {
         return [MobileOpcode.VERSION_RESPONSE, '1.0.0', 'Desktop'];
+      } else if (opcode === MobileOpcode.STATUS_REQUEST) {
+        // Return current desktop status
+        const status = this.callbacks.onStatusRequest();
+        return [MobileOpcode.STATUS, status];
       }
 
       return null;
@@ -151,6 +164,12 @@ export class MobileHandler {
         this.approved = true;
         console.log('[MobileHandler] Device approved:', info.identity);
         this.pendingDeviceInfo = null;
+        
+        // Notify that connection is now fully established
+        if (this.callbacks.onConnectionApproved) {
+          this.callbacks.onConnectionApproved();
+        }
+        
         return JSON.stringify([MobileOpcode.SECRET_RESPONSE, true]);
       } else {
         console.log('[MobileHandler] Device rejected:', info.identity);

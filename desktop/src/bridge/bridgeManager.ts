@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /**
  * Main bridge coordinator (LCU ↔ Rift ↔ Mobile)
  */
@@ -11,10 +12,19 @@ import { watchLcuConnection } from '../lib/lcuConnection';
 export interface BridgeConfig {
   riftUrl: string;
   jwtSecret: string;
+  userId: string; // Supabase user ID
 }
 
 export interface ConnectionRequestCallback {
   (deviceInfo: { device: string; browser: string; identity: string }): Promise<boolean>;
+}
+
+export interface StatusChangeCallback {
+  (status: {
+    riftConnected: boolean;
+    mobileConnected: boolean;
+    lcuConnected: boolean;
+  }): void;
 }
 
 export class BridgeManager {
@@ -24,14 +34,71 @@ export class BridgeManager {
   private config: BridgeConfig | null = null;
   private lcuClient: LcuClient = getLcuClient();
   private connectionRequestCallback: ConnectionRequestCallback | null = null;
+  private statusChangeCallback: StatusChangeCallback | null = null;
   private stopLcuWatching: (() => void) | null = null;
   private lcuConnected: boolean = false;
+  private riftConnected: boolean = false;
+  private lastFailedLcuPort: number | null = null; // Prevent repeated failed attempts
 
   /**
    * Sets the connection request callback
    */
   setConnectionRequestCallback(callback: ConnectionRequestCallback): void {
     this.connectionRequestCallback = callback;
+  }
+
+  /**
+   * Sets the status change callback
+   */
+  setStatusChangeCallback(callback: StatusChangeCallback): void {
+    this.statusChangeCallback = callback;
+  }
+
+  /**
+   * Gets current connection status
+   */
+  getStatus() {
+    return {
+      riftConnected: this.riftConnected,
+      mobileConnected: this.mobileHandlers.size > 0,
+      lcuConnected: this.lcuConnected,
+    };
+  }
+
+  /**
+   * Notifies listeners about status change and broadcasts to mobile
+   */
+  private notifyStatusChange(): void {
+    const status = this.getStatus();
+    
+    // Notify UI callback
+    if (this.statusChangeCallback) {
+      this.statusChangeCallback(status);
+    }
+
+    // Broadcast to all connected mobile devices
+    this.broadcastStatusToMobile();
+  }
+
+  /**
+   * Broadcasts current status to all connected mobile devices
+   */
+  private async broadcastStatusToMobile(): Promise<void> {
+    const status = this.getStatus();
+    
+    for (const [uuid, handler] of this.mobileHandlers.entries()) {
+      try {
+        if (handler.isReady()) {
+          const encrypted = await handler.encryptMessage([
+            MobileOpcode.STATUS,
+            status
+          ]);
+          this.riftClient?.sendToMobile(uuid, encrypted);
+        }
+      } catch (error) {
+        console.error('[BridgeManager] Failed to broadcast status to mobile:', error);
+      }
+    }
   }
 
   /**
@@ -65,19 +132,34 @@ export class BridgeManager {
     
     this.stopLcuWatching = watchLcuConnection(
       async (lcuConfig) => {
-        console.log('[BridgeManager] LCU connected on port:', lcuConfig.port);
+        // Skip if we already failed on this port (stale lockfile)
+        if (this.lastFailedLcuPort === lcuConfig.port) {
+          return;
+        }
+
+        console.log('[BridgeManager] LCU lockfile found on port:', lcuConfig.port);
         try {
+          // connect() now includes verification - throws if LCU isn't actually running
           await this.lcuClient.connect(lcuConfig);
           this.lcuConnected = true;
-          console.log('[BridgeManager] LCU client connected successfully');
+          this.lastFailedLcuPort = null; // Reset on success
+          console.log('[BridgeManager] LCU client verified and connected');
+          this.notifyStatusChange();
         } catch (error) {
-          console.error('[BridgeManager] Failed to connect LCU client:', error);
+          // Connection or verification failed - stale lockfile or client closed
+          console.log('[BridgeManager] LCU connection failed (stale lockfile?):', error);
+          this.lcuConnected = false;
+          this.lastFailedLcuPort = lcuConfig.port;
+          this.lcuClient.disconnect();
+          this.notifyStatusChange();
         }
       },
       () => {
-        console.log('[BridgeManager] LCU disconnected');
+        console.log('[BridgeManager] LCU disconnected (lockfile removed)');
         this.lcuConnected = false;
+        this.lastFailedLcuPort = null; // Reset when lockfile is removed
         this.lcuClient.disconnect();
+        this.notifyStatusChange();
       },
       3000 // Check every 3 seconds
     );
@@ -106,7 +188,7 @@ export class BridgeManager {
       // Use XMLHttpRequest instead of fetch for Overwolf compatibility
       // Replace localhost with 127.0.0.1 for Overwolf compatibility
       const riftUrl = this.config!.riftUrl.replace('localhost', '127.0.0.1');
-      console.log('[BridgeManager] Registering with Rift at:', riftUrl);
+      console.log('[BridgeManager] Registering with Rift at:', riftUrl, 'for user:', this.config.userId);
       
       const data = await new Promise<any>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -115,8 +197,6 @@ export class BridgeManager {
         xhr.setRequestHeader('Accept', 'application/json');
         
         xhr.onload = () => {
-          console.log('[BridgeManager] XHR response status:', xhr.status);
-          console.log('[BridgeManager] XHR response text:', xhr.responseText.substring(0, 200));
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
               const response = JSON.parse(xhr.responseText);
@@ -141,7 +221,8 @@ export class BridgeManager {
         
         xhr.timeout = 10000; // 10 second timeout
         try {
-          xhr.send(JSON.stringify({ pubkey: publicKey }));
+          // Send userId along with pubkey
+          xhr.send(JSON.stringify({ pubkey: publicKey, userId: this.config!.userId }));
         } catch (error: any) {
           console.error('[BridgeManager] Error sending XHR:', error);
           reject(new Error('Failed to send request: ' + error.message));
@@ -153,11 +234,7 @@ export class BridgeManager {
       }
 
       this.token = data.token;
-      console.log('[BridgeManager] Registered with Rift, token received');
-
-      // Extract code from JWT
-      const code = this.extractCodeFromToken(data.token);
-      console.log('[BridgeManager] Connection code:', code);
+      console.log('[BridgeManager] Registered with Rift successfully');
 
       // Connect to Rift WebSocket
       await this.connectToRift();
@@ -167,28 +244,6 @@ export class BridgeManager {
     }
   }
 
-  /**
-   * Extracts 6-digit code from JWT token
-   */
-  private extractCodeFromToken(token: string): string {
-    try {
-      const parts = token.split('.');
-      if (parts.length !== 3) {
-        throw new Error('Invalid JWT format');
-      }
-
-      // Decode base64 (add padding if needed)
-      const base64Json = parts[1];
-      const padded = base64Json.padEnd(4 * Math.ceil(base64Json.length / 4), '=');
-      const json = atob(padded);
-      const payload = JSON.parse(json);
-
-      return payload.code;
-    } catch (error) {
-      console.error('[BridgeManager] Failed to extract code from token:', error);
-      return '000000';
-    }
-  }
 
   /**
    * Connects to Rift WebSocket server
@@ -208,18 +263,24 @@ export class BridgeManager {
     const callbacks: RiftClientCallbacks = {
       onOpen: () => {
         console.log('[BridgeManager] Connected to Rift server');
+        this.riftConnected = true;
+        this.notifyStatusChange();
       },
       onClose: () => {
         console.log('[BridgeManager] Disconnected from Rift server');
+        this.riftConnected = false;
+        this.notifyStatusChange();
         // RiftClient already handles reconnection, don't duplicate it here
       },
       onNewConnection: (uuid: string) => {
         console.log('[BridgeManager] New mobile connection:', uuid);
         this.createMobileHandler(uuid);
+        // Status change will be notified after SECRET handshake completes
       },
       onConnectionClosed: (uuid: string) => {
         console.log('[BridgeManager] Mobile connection closed:', uuid);
         this.removeMobileHandler(uuid);
+        this.notifyStatusChange();
       },
       onMessage: (uuid: string, message: any) => {
         this.handleRiftMessage(uuid, message);
@@ -250,65 +311,81 @@ export class BridgeManager {
         }
       },
       onConnectionRequest: async (deviceInfo: { device: string; browser: string; identity: string }) => {
+        let approved = false;
+        
         // Check if we have a direct callback (non-Overwolf environment)
         if (this.connectionRequestCallback) {
           console.log('[BridgeManager] Using direct callback for connection request');
-          return this.connectionRequestCallback(deviceInfo);
-        }
-
-        // Check if Overwolf is available
-        if (typeof overwolf === 'undefined' || !overwolf.windows) {
-          console.log('[BridgeManager] Overwolf not available, auto-approving connection');
+          approved = await this.connectionRequestCallback(deviceInfo);
+        } else if (typeof overwolf === 'undefined' || !overwolf.windows) {
           // Auto-approve in non-Overwolf environment if no callback is set
-          return true;
+          console.log('[BridgeManager] Overwolf not available, auto-approving connection');
+          approved = true;
+        } else {
+          // Send connection request to desktop window via Overwolf messaging
+          approved = await new Promise<boolean>((resolve) => {
+            overwolf.windows.obtainDeclaredWindow('desktop', (result: any) => {
+              if (result.success) {
+                overwolf.windows.sendMessage(result.window.id, 'connection_request', JSON.stringify({
+                  type: 'connection_request',
+                  deviceInfo
+                }), () => {});
+
+                // Listen for response
+                const messageListener = (windowId: any, _messageId: any, message: any) => {
+                  let messageContent: string | null = null;
+                  
+                  if (typeof message === 'string') {
+                    messageContent = message;
+                  } else if (windowId && typeof windowId === 'object' && typeof windowId.content === 'string') {
+                    messageContent = windowId.content;
+                  }
+                  
+                  if (messageContent) {
+                    try {
+                      const data = JSON.parse(messageContent);
+                      if (data.type === 'connection_response' && data.deviceIdentity === deviceInfo.identity) {
+                        overwolf.windows.onMessageReceived.removeListener(messageListener);
+                        resolve(data.approved === true);
+                      }
+                    } catch (error) {
+                      // Ignore parsing errors
+                    }
+                  }
+                };
+
+                overwolf.windows.onMessageReceived.addListener(messageListener);
+
+                // Timeout after 30 seconds
+                setTimeout(() => {
+                  overwolf.windows.onMessageReceived.removeListener(messageListener);
+                  resolve(false);
+                }, 30000);
+              } else {
+                // No desktop window, auto-approve
+                console.log('[BridgeManager] No desktop window found, auto-approving');
+                resolve(true);
+              }
+            });
+          });
         }
 
-        // Send connection request to desktop window via Overwolf messaging
-        return new Promise<boolean>((resolve) => {
-          overwolf.windows.obtainDeclaredWindow('desktop', (result: any) => {
-            if (result.success) {
-              overwolf.windows.sendMessage(result.window.id, 'connection_request', JSON.stringify({
-                type: 'connection_request',
-                deviceInfo
-              }), () => {});
-
-              // Listen for response
-              const messageListener = (windowId: any, _messageId: any, message: any) => {
-                let messageContent: string | null = null;
-                
-                if (typeof message === 'string') {
-                  messageContent = message;
-                } else if (windowId && typeof windowId === 'object' && typeof windowId.content === 'string') {
-                  messageContent = windowId.content;
-                }
-                
-                if (messageContent) {
-                  try {
-                    const data = JSON.parse(messageContent);
-                    if (data.type === 'connection_response' && data.deviceIdentity === deviceInfo.identity) {
-                      overwolf.windows.onMessageReceived.removeListener(messageListener);
-                      resolve(data.approved === true);
-                    }
-                  } catch (error) {
-                    // Ignore parsing errors
-                  }
-                }
-              };
-
-              overwolf.windows.onMessageReceived.addListener(messageListener);
-
-              // Timeout after 30 seconds
-              setTimeout(() => {
-                overwolf.windows.onMessageReceived.removeListener(messageListener);
-                resolve(false);
-              }, 30000);
-            } else {
-              // No desktop window, auto-approve
-              console.log('[BridgeManager] No desktop window found, auto-approving');
-              resolve(true);
-            }
-          });
-        });
+        // If approved, notify status change
+        if (approved) {
+          // Small delay to ensure handler is fully set up
+          setTimeout(() => this.notifyStatusChange(), 100);
+        }
+        
+        return approved;
+      },
+      onStatusRequest: () => {
+        // Return current status when mobile requests it
+        return this.getStatus();
+      },
+      onConnectionApproved: () => {
+        // Connection is now fully established (after handshake complete)
+        console.log('[BridgeManager] Mobile connection fully established');
+        this.notifyStatusChange();
       },
       onSubscribe: (path: string) => {
         // Subscribe to LCU endpoint
@@ -410,16 +487,6 @@ export class BridgeManager {
     }).catch(error => {
       console.error('[BridgeManager] Error handling message:', error);
     });
-  }
-
-  /**
-   * Gets the connection code
-   */
-  getCode(): string | null {
-    if (!this.token) {
-      return null;
-    }
-    return this.extractCodeFromToken(this.token);
   }
 
   /**

@@ -42,15 +42,78 @@ export class LcuClient {
 
   /**
    * Connects to the LCU API using the provided config
+   * Verifies connection by making a test request
    */
   async connect(config: LcuConfig): Promise<void> {
     if (this.config && this.config.port === config.port && this.config.password === config.password) {
-      // Already connected with same config
-      return;
+      // Already connected with same config - but verify it still works
+      try {
+        await this.verifyConnection();
+        return;
+      } catch {
+        // Connection no longer works, reconnect
+        this.disconnect();
+      }
     }
 
     this.config = config;
-    await this.connectWebSocket();
+    
+    // Verify connection works before reporting as connected
+    try {
+      await this.verifyConnection();
+    } catch (error) {
+      this.config = null;
+      throw new Error('LCU connection failed - League client not responding');
+    }
+    
+    // Start WebSocket for events (non-blocking, HTTP fallback works)
+    this.connectWebSocket();
+  }
+
+  /**
+   * Verifies the LCU connection by making a test request
+   */
+  private async verifyConnection(): Promise<void> {
+    if (!this.config) {
+      throw new Error('No config');
+    }
+
+    // Ensure proxy has our config first
+    await this.setProxyConfig();
+    
+    // Make a test request via proxy using XMLHttpRequest for consistency
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', 'http://127.0.0.1:21337/lol-summoner/v1/current-summoner', true);
+      xhr.setRequestHeader('Accept', 'application/json');
+      xhr.timeout = 5000; // 5 second timeout
+      
+      xhr.onload = () => {
+        // 404 is okay (not logged in), 200 is connected
+        if (xhr.status === 200 || xhr.status === 404) {
+          resolve();
+        } else if (xhr.status === 500) {
+          // Proxy returns 500 with error details when LCU can't be reached
+          if (xhr.responseText.includes('ECONNREFUSED') || xhr.responseText.includes('not running')) {
+            reject(new Error('LCU not responding - League client not running'));
+          } else {
+            reject(new Error('LCU request failed: ' + xhr.responseText));
+          }
+        } else {
+          resolve(); // Other statuses are okay (e.g., 401 = no auth but server is there)
+        }
+      };
+      
+      xhr.onerror = () => {
+        reject(new Error('LCU verification request failed'));
+      };
+      
+      xhr.ontimeout = () => {
+        reject(new Error('LCU verification timeout'));
+      };
+      
+      xhr.send();
+    });
   }
 
   /**
