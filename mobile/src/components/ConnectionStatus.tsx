@@ -35,7 +35,7 @@ const StatusItem = ({ label, connected, hint }: StatusItemProps) => (
 );
 
 export default function ConnectionStatus({ status, onConnect, onDisconnect, loading }: ConnectionStatusProps) {
-    const allConnected = status.riftConnected && status.desktopOnline && status.mobileConnected && status.lcuConnected;
+    const allConnected = status.riftConnected && status.desktopOnline && status.mobileConnected;
     const partiallyConnected = status.mobileConnected;
     const canConnect = status.desktopOnline && !partiallyConnected;
 
@@ -61,13 +61,7 @@ export default function ConnectionStatus({ status, onConnect, onDisconnect, load
                 icon: '✅',
             };
         }
-        if (!status.lcuConnected) {
-            return {
-                title: 'Open League Client',
-                message: 'Launch League of Legends on your computer to enable controls.',
-                icon: '🎮',
-            };
-        }
+
         return {
             title: 'All Systems Ready',
             message: 'You\'re connected and ready to control League!',
@@ -89,31 +83,27 @@ export default function ConnectionStatus({ status, onConnect, onDisconnect, load
             {/* Status Items */}
             <View style={styles.statusContainer}>
                 <Text style={styles.sectionTitle}>Connection Status</Text>
-                
+
                 <StatusItem
                     label="Desktop App"
                     connected={status.desktopOnline}
                     hint="Open desktop app & sign in"
                 />
-                
+
                 <StatusItem
                     label="Mobile Connected"
                     connected={status.mobileConnected}
                     hint="Tap Connect below"
                 />
-                
-                <StatusItem
-                    label="League Client"
-                    connected={status.lcuConnected}
-                    hint="Open League of Legends"
-                />
+
+
             </View>
 
             {/* Action Button */}
             {!partiallyConnected ? (
                 <TouchableOpacity
                     style={[
-                        styles.connectButton, 
+                        styles.connectButton,
                         (loading || !canConnect) && styles.connectButtonDisabled
                     ]}
                     onPress={onConnect}

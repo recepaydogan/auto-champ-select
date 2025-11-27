@@ -25,7 +25,7 @@ function isExpectedLcuError(error: Error | string): boolean {
     'No active delegate',
     'QUEUE_NOT_ENABLED'
   ];
-  
+
   return expectedErrors.some(expected => errorMessage.includes(expected));
 }
 
@@ -37,8 +37,9 @@ export class LcuClient {
   private isConnecting = false;
   private pollingIntervals: Map<string, number> = new Map();
   private lastValues: Map<string, any> = new Map();
+  private proxyConfigured = false;
 
-  constructor() {}
+  constructor() { }
 
   /**
    * Connects to the LCU API using the provided config
@@ -57,7 +58,8 @@ export class LcuClient {
     }
 
     this.config = config;
-    
+    this.proxyConfigured = false;
+
     // Verify connection works before reporting as connected
     try {
       await this.verifyConnection();
@@ -65,7 +67,7 @@ export class LcuClient {
       this.config = null;
       throw new Error('LCU connection failed - League client not responding');
     }
-    
+
     // Start WebSocket for events (non-blocking, HTTP fallback works)
     this.connectWebSocket();
   }
@@ -80,14 +82,14 @@ export class LcuClient {
 
     // Ensure proxy has our config first
     await this.setProxyConfig();
-    
+
     // Make a test request via proxy using XMLHttpRequest for consistency
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('GET', 'http://127.0.0.1:21337/lol-summoner/v1/current-summoner', true);
       xhr.setRequestHeader('Accept', 'application/json');
       xhr.timeout = 5000; // 5 second timeout
-      
+
       xhr.onload = () => {
         // 404 is okay (not logged in), 200 is connected
         if (xhr.status === 200 || xhr.status === 404) {
@@ -103,15 +105,15 @@ export class LcuClient {
           resolve(); // Other statuses are okay (e.g., 401 = no auth but server is there)
         }
       };
-      
+
       xhr.onerror = () => {
         reject(new Error('LCU verification request failed'));
       };
-      
+
       xhr.ontimeout = () => {
         reject(new Error('LCU verification timeout'));
       };
-      
+
       xhr.send();
     });
   }
@@ -139,6 +141,7 @@ export class LcuClient {
 
     this.config = null;
     this.isConnecting = false;
+    this.proxyConfigured = false;
   }
 
   /**
@@ -165,12 +168,12 @@ export class LcuClient {
       overwolf.windows.getCurrentWindow((windowResult: any) => {
         const windowName = windowResult.window?.name;
         const isBackground = windowName === 'background';
-        
+
         // Only log for queue-related requests to reduce noise
         if (path.includes('queues') || path.includes('EnabledGameQueues') || path.includes('DefaultGameQueues')) {
           console.log('[LCU Client] Request:', method, path, isBackground ? '(background)' : '(desktop)');
         }
-        
+
         if (isBackground) {
           // We're in background script - make direct request
           this.makeDirectRequest(path, method, body).then(resolve).catch(reject);
@@ -192,7 +195,7 @@ export class LcuClient {
 
     // Use local proxy server to bypass CORS
     const proxyUrl = `http://127.0.0.1:21337${path}`;
-    
+
     // First, ensure proxy has our config
     try {
       await this.setProxyConfig();
@@ -204,10 +207,10 @@ export class LcuClient {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open(method, proxyUrl, true);
-      
+
       // No custom headers needed - proxy handles auth
       xhr.setRequestHeader('Accept', 'application/json');
-      
+
       // Only set Content-Type if there's actually a body (matching Mimic's behavior)
       if (body !== undefined && body !== null) {
         xhr.setRequestHeader('Content-Type', 'application/json');
@@ -215,7 +218,7 @@ export class LcuClient {
 
       xhr.onload = () => {
         const responseText = xhr.responseText;
-        
+
         if (xhr.status === 204 || xhr.status === 202) {
           resolve(null);
           return;
@@ -263,7 +266,7 @@ export class LcuClient {
               errorMessage = responseText.substring(0, 200);
             }
           }
-          
+
           const error = new Error(errorMessage);
           if (isExpectedLcuError(error)) {
             // Expected errors - return null silently
@@ -307,25 +310,27 @@ export class LcuClient {
    */
   private async setProxyConfig(): Promise<void> {
     if (!this.config) return;
+    if (this.proxyConfigured) return;
 
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', 'http://127.0.0.1:21337/set-config', true);
       xhr.setRequestHeader('Content-Type', 'application/json');
-      
+
       xhr.onload = () => {
         if (xhr.status === 200) {
+          this.proxyConfigured = true;
           resolve();
         } else {
           reject(new Error(`Failed to set proxy config: ${xhr.status}`));
         }
       };
-      
+
       xhr.onerror = () => {
         // Proxy server might not be running - that's OK, we'll try direct
         resolve();
       };
-      
+
       xhr.send(JSON.stringify(this.config));
     });
   }
@@ -337,7 +342,7 @@ export class LcuClient {
     return new Promise((resolve, reject) => {
       const requestId = Date.now().toString();
       let timeoutId: ReturnType<typeof setTimeout> | null = null;
-      
+
       // Helper to clear timeout and resolve
       const clearTimeoutAndResolve = (value: any) => {
         if (timeoutId) {
@@ -346,7 +351,7 @@ export class LcuClient {
         }
         resolve(value);
       };
-      
+
       // Helper to clear timeout and reject
       const clearTimeoutAndReject = (error: any) => {
         if (timeoutId) {
@@ -355,12 +360,12 @@ export class LcuClient {
         }
         reject(error);
       };
-      
+
       // Set up response listener (minimal logging)
       const messageListener = (windowId: any, _messageId: any, message: any) => {
         // Extract message content - Overwolf API puts it in windowId.content
         let messageContent: string | null = null;
-        
+
         if (windowId && typeof windowId === 'object' && typeof windowId.content === 'string') {
           messageContent = windowId.content;
         } else if (typeof message === 'string') {
@@ -370,15 +375,15 @@ export class LcuClient {
         } else if (typeof windowId === 'string') {
           messageContent = windowId;
         }
-        
+
         if (!messageContent) return;
-        
+
         try {
           const data = JSON.parse(messageContent);
-          
+
           if (data.type === 'lcu_response' && data.requestId === requestId) {
             overwolf.windows.onMessageReceived.removeListener(messageListener);
-            
+
             if (data.error) {
               const error = new Error(data.error);
               if (isExpectedLcuError(error)) {
@@ -409,7 +414,7 @@ export class LcuClient {
             body,
             config: this.config
           });
-          
+
           overwolf.windows.sendMessage(result.window.id, requestId, messageContent, (sendResult: any) => {
             if (sendResult.status === 'error') {
               overwolf.windows.onMessageReceived.removeListener(messageListener);
@@ -436,7 +441,7 @@ export class LcuClient {
    */
   observe(uriPattern: string | RegExp, listener: LcuEventListener): () => void {
     const pattern = typeof uriPattern === 'string' ? uriPattern : uriPattern.source;
-    
+
     if (!this.listeners.has(pattern)) {
       this.listeners.set(pattern, new Set());
     }
@@ -546,7 +551,7 @@ export class LcuClient {
       ws.onopen = () => {
         console.log('LCU WebSocket connected');
         this.isConnecting = false;
-        
+
         // Subscribe to OnJsonApiEvent
         try {
           ws.send(JSON.stringify([5, 'OnJsonApiEvent']));
@@ -589,7 +594,7 @@ export class LcuClient {
   private handleWebSocketMessage(event: MessageEvent): void {
     try {
       const data = JSON.parse(event.data);
-      
+
       // WAMP message format: [messageType, topic, ...]
       // OnJsonApiEvent is type 8
       if (Array.isArray(data) && data.length >= 3 && data[0] === 8 && data[1] === 'OnJsonApiEvent') {
@@ -645,7 +650,7 @@ export class LcuClient {
    */
   async cancelQueue(): Promise<void> {
     console.log('[LCU Client] Cancelling queue...')
-    
+
     // First check if there's an active queue
     try {
       const searchState = await this.getMatchmakingSearch()
@@ -658,7 +663,7 @@ export class LcuClient {
       // The DELETE will fail gracefully if there's no queue
       console.log('[LCU Client] Could not check queue state, attempting cancel anyway:', error.message)
     }
-    
+
     try {
       await this.request('/lol-lobby/v2/lobby/matchmaking/search', 'DELETE');
       console.log('[LCU Client] Queue cancelled successfully')
@@ -778,7 +783,7 @@ export class LcuClient {
       const data = await this.request('/lol-platform-config/v1/namespaces/LcuSocial/EnabledGameQueues');
       // Platform config endpoint might return different formats
       let value: string = '';
-      
+
       if (typeof data === 'string') {
         value = data;
       } else if (data && typeof data === 'object') {
@@ -787,12 +792,12 @@ export class LcuClient {
           value = String(value);
         }
       }
-      
+
       if (!value || typeof value !== 'string') {
         console.warn('[LCU Client] getEnabledGameQueues: Not a string, got:', typeof data);
         return [];
       }
-      
+
       const result = value.split(',').map((x: string) => parseInt(x.trim(), 10)).filter((x: number) => !isNaN(x));
       console.log('[LCU Client] getEnabledGameQueues: Got', result.length, 'enabled queue IDs');
       return result;
@@ -810,7 +815,7 @@ export class LcuClient {
     try {
       const data = await this.request('/lol-platform-config/v1/namespaces/LcuSocial/DefaultGameQueues');
       let value: string = '';
-      
+
       if (typeof data === 'string') {
         value = data;
       } else if (data && typeof data === 'object') {
@@ -819,12 +824,12 @@ export class LcuClient {
           value = String(value);
         }
       }
-      
+
       if (!value || typeof value !== 'string') {
         console.warn('[LCU Client] getDefaultGameQueues: Not a string, got:', typeof data);
         return [];
       }
-      
+
       const result = value.split(',').map((x: string) => parseInt(x.trim(), 10)).filter((x: number) => !isNaN(x));
       console.log('[LCU Client] getDefaultGameQueues: Got', result.length, 'default queue IDs');
       return result;

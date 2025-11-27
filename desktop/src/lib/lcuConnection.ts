@@ -7,86 +7,50 @@ export interface LcuConfig {
   pid: number;
 }
 
-// Common lockfile locations
-const LOCKFILE_PATHS = [
-  '%LOCALAPPDATA%\\Riot Games\\League of Legends\\lockfile',
-  'C:\\Riot Games\\League of Legends\\lockfile',
-  'C:\\Program Files\\Riot Games\\League of Legends\\lockfile',
-  'C:\\Program Files (x86)\\Riot Games\\League of Legends\\lockfile',
-];
+
 
 /**
- * Reads the League client lockfile and extracts connection information
+ * Discovers League Client Update (LCU) connection info by querying the proxy server
  */
-export async function discoverLcuConnection(verbose: boolean = false): Promise<LcuConfig | null> {
-  // Try all possible lockfile locations silently
-  for (const path of LOCKFILE_PATHS) {
-    try {
-      const config = await readLockfile(path, verbose);
-      if (config) {
-        return config;
-      }
-    } catch {
-      // Silently continue to next path
-    }
-  }
-  return null;
+export async function discoverLcuConnection(_verbose: boolean = false): Promise<LcuConfig | null> {
+  // We no longer read lockfiles directly because Overwolf's file access is unreliable
+  // Instead, we ask our Node.js proxy server which has better system access
+  return queryProxyConnectionInfo();
 }
 
 /**
- * Reads and parses the lockfile at the specified path
+ * Queries the local proxy server for LCU connection info
  */
-async function readLockfile(path: string, verbose: boolean = false): Promise<LcuConfig | null> {
-  return new Promise((resolve, reject) => {
-    if (!overwolf || !overwolf.io) {
-      reject(new Error('Overwolf API not available'));
-      return;
-    }
+async function queryProxyConnectionInfo(): Promise<LcuConfig | null> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', 'http://127.0.0.1:21337/connection-info', true);
+    xhr.setRequestHeader('Accept', 'application/json');
+    xhr.timeout = 1000; // Fast timeout since it's local
 
-    try {
-      overwolf.io.readTextFile(path, {}, (result: any) => {
-        if (!result || result.status === 'error' || result.error || !result.content) {
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        try {
+          const config = JSON.parse(xhr.responseText);
+          resolve(config);
+        } catch {
           resolve(null);
-          return;
         }
+      } else {
+        resolve(null);
+      }
+    };
 
-        parseLockfileContent(result.content, resolve, reject, verbose);
-      });
-    } catch (error: any) {
-      reject(error);
-    }
+    xhr.onerror = () => {
+      resolve(null);
+    };
+
+    xhr.ontimeout = () => {
+      resolve(null);
+    };
+
+    xhr.send();
   });
-}
-
-/**
- * Parses lockfile content
- */
-function parseLockfileContent(content: string, resolve: (value: LcuConfig | null) => void, reject: (error: any) => void, verbose: boolean = false): void {
-  try {
-    // Lockfile format: process:pid:port:password:protocol
-    const parts = content.trim().split(':');
-    
-    if (parts.length < 4) {
-      resolve(null);
-      return;
-    }
-
-    const pid = parseInt(parts[1], 10);
-    const port = parseInt(parts[2], 10);
-    const password = parts[3];
-
-    if (isNaN(pid) || isNaN(port) || !password) {
-      resolve(null);
-      return;
-    }
-
-    resolve({ pid, port, password });
-  } catch (error) {
-    if (verbose) {
-      console.error('[LCU Connection] Error parsing lockfile:', error);
-    }
-    reject(error);
-  }
 }
 
 /**
@@ -107,9 +71,9 @@ export function watchLcuConnection(
 
     if (config) {
       // Check if config changed (port/password might change on restart)
-      if (!lastConfig || 
-          lastConfig.port !== config.port || 
-          lastConfig.password !== config.password) {
+      if (!lastConfig ||
+        lastConfig.port !== config.port ||
+        lastConfig.password !== config.password) {
         console.log('[LCU Connection] League client connected - Port:', config.port);
         lastConfig = config;
         onConnected(config);

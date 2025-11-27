@@ -54,7 +54,7 @@ function discoverLcuConfig() {
 function verifyLcuConnection(config) {
   return new Promise((resolve) => {
     const token = Buffer.from(`riot:${config.password}`).toString('base64');
-    
+
     const options = {
       hostname: '127.0.0.1',
       port: config.port,
@@ -131,19 +131,19 @@ async function initializeLcuDetection() {
   } else {
     console.log('[Proxy] League client not found - will watch for it...');
   }
-  
+
   // Start watching for League client
   watchForLeagueClient();
 }
 
 initializeLcuDetection();
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   // Enable CORS for Overwolf extension
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  
+
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
     res.end();
@@ -152,7 +152,7 @@ const server = http.createServer((req, res) => {
 
   // Parse request
   const url = new URL(req.url, `http://${req.headers.host}`);
-  
+
   if (url.pathname === '/set-config') {
     // Set LCU config
     let body = '';
@@ -205,6 +205,26 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Expose connection info for local frontend
+  if (url.pathname === '/connection-info') {
+    if (lcuConfig) {
+      // Verify connection is still alive before returning it
+      const isAlive = await verifyLcuConnection(lcuConfig);
+      if (isAlive) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(lcuConfig));
+      } else {
+        lcuConfig = null;
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'League client not running' }));
+      }
+    } else {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'League client not running' }));
+    }
+    return;
+  }
+
   if (!lcuConfig) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'LCU config not set - League client not running or not detected' }));
@@ -214,9 +234,9 @@ const server = http.createServer((req, res) => {
   // Proxy request to LCU
   const lcuPath = url.pathname;
   const lcuMethod = req.method;
-  
+
   const token = Buffer.from(`riot:${lcuConfig.password}`).toString('base64');
-  
+
   // Base headers - Authorization is always needed
   const options = {
     hostname: '127.0.0.1',
@@ -232,7 +252,7 @@ const server = http.createServer((req, res) => {
 
   let requestBody = '';
   req.on('data', chunk => { requestBody += chunk.toString(); });
-  
+
   req.on('end', () => {
     // Only set Content-Type and Content-Length if there's actually a body
     // Mimic's C# code sets Content = null when body is null, not an empty string
@@ -249,12 +269,12 @@ const server = http.createServer((req, res) => {
         'Content-Type': proxyRes.headers['content-type'] || 'application/json',
         'Access-Control-Allow-Origin': '*'
       });
-      
+
       proxyRes.on('data', (chunk) => {
         responseBody += chunk.toString();
         res.write(chunk);
       });
-      
+
       proxyRes.on('end', () => {
         console.log(`[Proxy] ${lcuMethod} ${lcuPath} -> ${proxyRes.statusCode}`);
         if (proxyRes.statusCode >= 400) {
@@ -274,7 +294,7 @@ const server = http.createServer((req, res) => {
     if (requestBody && requestBody.length > 0) {
       proxyReq.write(requestBody);
     }
-    
+
     proxyReq.end();
   });
 });

@@ -9,7 +9,7 @@ import { getBridgeManager } from '../bridge/bridgeManager'
 
 const Background = () => {
   const [session, setSession] = useState<Session | null>(null);
-  const [autoAccept] = useState(true);
+
 
   useEffect(() => {
     // 1. Handle Auth Session
@@ -37,18 +37,18 @@ const Background = () => {
             overwolf.windows.sendMessage(result.window.id, 'connection_request', JSON.stringify({
               type: 'connection_request',
               deviceInfo
-            }), () => {});
-            
+            }), () => { });
+
             // Listen for approval response
             const messageListener = (windowId: any, _messageId: any, message: any) => {
               let messageContent: string | null = null;
-              
+
               if (typeof message === 'string') {
                 messageContent = message;
               } else if (windowId && typeof windowId === 'object' && typeof windowId.content === 'string') {
                 messageContent = windowId.content;
               }
-              
+
               if (messageContent) {
                 try {
                   const data = JSON.parse(messageContent);
@@ -61,9 +61,9 @@ const Background = () => {
                 }
               }
             };
-            
+
             overwolf.windows.onMessageReceived.addListener(messageListener);
-            
+
             // Timeout after 30 seconds
             setTimeout(() => {
               overwolf.windows.onMessageReceived.removeListener(messageListener);
@@ -121,7 +121,7 @@ const Background = () => {
   useEffect(() => {
     console.log('[Background] ===== Setting up message listener =====');
     console.log('[Background] Background window ready to receive messages');
-    
+
     // Overwolf's onMessageReceived callback signature: (windowId, messageId, message)
     // where message is a string containing the JSON message content
     const messageListener = (windowId: any, messageId: any, message: any) => {
@@ -130,10 +130,10 @@ const Background = () => {
       console.log('[Background] messageId:', messageId);
       console.log('[Background] message type:', typeof message);
       console.log('[Background] message value:', typeof message === 'string' ? message.substring(0, 200) : message);
-      
+
       // According to Overwolf API, message parameter should be a string
       let messageContent: string | null = null;
-      
+
       // Try message parameter as string first (standard Overwolf API)
       if (typeof message === 'string') {
         messageContent = message;
@@ -154,7 +154,7 @@ const Background = () => {
         messageContent = windowId;
         console.log('[Background] ✓ Extracted message from windowId (string)');
       }
-      
+
       if (!messageContent) {
         console.error('[Background] ✗ Could not extract message content from any location');
         console.error('[Background] Raw parameters:', {
@@ -167,16 +167,16 @@ const Background = () => {
         });
         return;
       }
-      
+
       console.log('[Background] Message content length:', messageContent.length);
       console.log('[Background] Message content preview:', messageContent.substring(0, 300));
-      
+
       try {
         const data = JSON.parse(messageContent);
         console.log('[Background] ✓ Successfully parsed JSON');
         console.log('[Background] Message type:', data.type);
         console.log('[Background] Request ID:', data.requestId);
-        
+
         if (data.type === 'lcu_request') {
           console.log('[Background] ✓ Valid LCU request detected');
           console.log('[Background] Request details:', {
@@ -193,7 +193,7 @@ const Background = () => {
         console.error('[Background] ✗ Error parsing message JSON:', error);
         console.error('[Background] Message content that failed to parse:', messageContent);
       }
-      
+
       console.log('[Background] ======================================');
     };
 
@@ -204,15 +204,15 @@ const Background = () => {
     async function handleLcuRequest(data: any) {
       const requestId = data.requestId;
       const startTime = Date.now();
-      
+
       console.log('[Background] ===== Processing LCU Request =====');
       console.log('[Background] Request ID:', requestId);
       console.log('[Background] Path:', data.path);
       console.log('[Background] Method:', data.method);
       console.log('[Background] Has body:', !!data.body);
-      
+
       const client = getLcuClient();
-      
+
       // Connect if not already connected
       if (!client.isConnected()) {
         if (data.config) {
@@ -230,7 +230,7 @@ const Background = () => {
                   type: 'lcu_response',
                   requestId: requestId,
                   error: `Failed to connect to LCU: ${error.message}`
-                }), () => {});
+                }), () => { });
               }
             });
             return;
@@ -244,7 +244,7 @@ const Background = () => {
                 type: 'lcu_response',
                 requestId: requestId,
                 error: 'LCU client not connected and no config provided'
-              }), () => {});
+              }), () => { });
             }
           });
           return;
@@ -257,7 +257,7 @@ const Background = () => {
         console.log('[Background] Making LCU request to proxy server...');
         const result = await client.request(data.path, data.method, data.body);
         const duration = Date.now() - startTime;
-        
+
         console.log('[Background] ✓ LCU request succeeded');
         console.log('[Background] Duration:', duration, 'ms');
         console.log('[Background] Result type:', typeof result);
@@ -265,7 +265,7 @@ const Background = () => {
         if (Array.isArray(result)) {
           console.log('[Background] Result length:', result.length);
         }
-        
+
         // Send response back to desktop window
         console.log('[Background] Obtaining desktop window to send response...');
         overwolf.windows.obtainDeclaredWindow('desktop', (windowResult: any) => {
@@ -277,7 +277,7 @@ const Background = () => {
               data: result
             });
             console.log('[Background] Sending response message (length:', responseMessage.length, 'chars)');
-            
+
             overwolf.windows.sendMessage(windowResult.window.id, requestId, responseMessage, (sendResult: any) => {
               if (sendResult.status === 'error') {
                 console.error('[Background] ✗ Failed to send response:', sendResult.error);
@@ -298,7 +298,7 @@ const Background = () => {
         console.error('[Background] Duration:', duration, 'ms');
         console.error('[Background] Error:', error.message);
         console.error('[Background] Error stack:', error.stack);
-        
+
         // Send error back
         console.log('[Background] Obtaining desktop window to send error response...');
         overwolf.windows.obtainDeclaredWindow('desktop', (windowResult: any) => {
@@ -343,20 +343,7 @@ const Background = () => {
         console.log("LCU connected:", config.port);
         await client.connect(config);
 
-        // Set up auto-accept for ready check
-        if (autoAccept) {
-          client.observe('/lol-matchmaking/v1/ready-check', async (event) => {
-            if (event.data && event.data.state === 'InProgress') {
-              console.log("Ready check detected, auto-accepting...");
-              try {
-                await acceptReadyCheck();
-                console.log("Auto-accepted ready check");
-              } catch (error) {
-                console.error("Failed to auto-accept:", error);
-              }
-            }
-          });
-        }
+
 
         // Forward LCU events to desktop window
         client.observe('/lol-gameflow/v1/session', (event) => {
@@ -366,7 +353,7 @@ const Background = () => {
                 type: 'lcu_event',
                 event: 'gameflow',
                 data: event.data
-              }), () => {});
+              }), () => { });
             }
           });
         });
@@ -378,7 +365,7 @@ const Background = () => {
                 type: 'lcu_event',
                 event: 'lobby',
                 data: event.data
-              }), () => {});
+              }), () => { });
             }
           });
         });
@@ -390,7 +377,7 @@ const Background = () => {
                 type: 'lcu_event',
                 event: 'matchmaking',
                 data: event.data
-              }), () => {});
+              }), () => { });
             }
           });
         });
@@ -402,7 +389,7 @@ const Background = () => {
                 type: 'lcu_event',
                 event: 'champ_select',
                 data: event.data
-              }), () => {});
+              }), () => { });
             }
           });
         });
@@ -419,7 +406,7 @@ const Background = () => {
       }
       client.disconnect();
     };
-  }, [autoAccept]);
+  }, []);
 
   useEffect(() => {
     console.log("Auto Champ Select Background Window Loaded");

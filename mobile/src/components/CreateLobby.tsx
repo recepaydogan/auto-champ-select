@@ -10,24 +10,27 @@ interface GameQueue {
   id: number;
   queueAvailability: string;
   mapId: number;
+  isCustom?: boolean;
 }
 
 interface CreateLobbyProps {
   visible: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  onError?: (message: string) => void;
 }
 
-export default function CreateLobby({ visible, onClose, onSuccess }: CreateLobbyProps) {
+export default function CreateLobby({ visible, onClose, onSuccess, onError }: CreateLobbyProps) {
   const [queues, setQueues] = useState<GameQueue[]>([]);
+  const [groupedQueues, setGroupedQueues] = useState<{ [key: string]: GameQueue[] }>({});
   const [selectedQueueId, setSelectedQueueId] = useState<number>(0);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
 
   const lcuBridge = getLCUBridge();
-
+  console.log("queues", queues);
   useEffect(() => {
-    if (visible && lcuBridge.isConnected()) {
+    if (visible && lcuBridge.getIsConnected()) {
       loadQueues();
     }
   }, [visible]);
@@ -36,39 +39,67 @@ export default function CreateLobby({ visible, onClose, onSuccess }: CreateLobby
     try {
       setLoading(true);
       console.log('[CreateLobby] Starting to load queues...');
-      console.log('[CreateLobby] lcuBridge.isConnected():', lcuBridge.isConnected());
-      
-      console.log('[CreateLobby] Requesting /lol-game-queues/v1/queues...');
+
       const queuesResult = await lcuBridge.request('/lol-game-queues/v1/queues');
-      console.log('[CreateLobby] Queues result:', queuesResult);
-      
-      console.log('[CreateLobby] Requesting enabled queues...');
-      const enabledResult = await lcuBridge.request('/lol-platform-config/v1/namespaces/LcuSocial/EnabledGameQueues').catch((e) => {
-        console.log('[CreateLobby] Enabled queues error (ignored):', e);
-        return null;
-      });
-      console.log('[CreateLobby] Enabled result:', enabledResult);
-
       let allQueues: GameQueue[] = queuesResult.content || [];
-      let enabledIds: number[] = [];
-
-      if (enabledResult && enabledResult.content) {
-        const enabledStr = typeof enabledResult.content === 'string' 
-          ? enabledResult.content 
-          : enabledResult.content.value || enabledResult.content;
-        enabledIds = enabledStr.split(',').map((x: string) => parseInt(x.trim(), 10)).filter((x: number) => !isNaN(x));
-      }
-
-      // Filter to only PvP queues that are available
-      const pvpQueues = allQueues.filter(q => 
+      console.log("allQueues", allQueues);
+      // Filter logic:
+      // 1. Must be 'Available'
+      // 2. Must NOT be custom (isCustom === false), UNLESS it is Practice Tool (id 3140)
+      const validQueues = allQueues.filter(q =>
         q.queueAvailability === 'Available' &&
-        (enabledIds.length === 0 || enabledIds.includes(q.id))
+        (!q.isCustom || q.id === 3140)
       );
 
-      setQueues(pvpQueues);
-      
-      if (pvpQueues.length > 0) {
-        setSelectedQueueId(pvpQueues[0].id);
+      console.log('[CreateLobby] Valid queues count:', validQueues.length);
+
+      setQueues(validQueues);
+
+      // Group queues
+      const groups: { [key: string]: GameQueue[] } = {
+        'Sihirdar Vadisi': [],
+        'Teamfight Tactics': [],
+        'ARAM': [],
+        'Arena ve URF': [],
+        'Antrenman': [],
+        'Diğer': []
+      };
+
+      validQueues.forEach(q => {
+        // 1. Antrenman: Practice Tool, Tutorial, and Co-op vs AI (VersusAi)
+        if (q.gameMode === 'PRACTICETOOL' || q.gameMode === 'TUTORIAL' || q.category === 'VersusAi' || q.id === 3140) {
+          groups['Antrenman'].push(q);
+        }
+        // 2. Teamfight Tactics: Map 22
+        else if (q.mapId === 22 || q.gameMode === 'TFT' || q.gameMode === 'TURBO' || q.gameMode === 'DOUBLE' || q.gameMode === 'CHONCC') {
+          groups['Teamfight Tactics'].push(q);
+        }
+        // 3. Arena ve URF: Cherry, URF, Ultbook, Strawberry (Swarm)
+        else if (q.gameMode === 'CHERRY' || q.gameMode === 'URF' || q.gameMode === 'ULTBOOK' || q.gameMode === 'STRAWBERRY') {
+          groups['Arena ve URF'].push(q);
+        }
+        // 4. ARAM: Map 12
+        else if (q.gameMode === 'ARAM' || q.mapId === 12) {
+          groups['ARAM'].push(q);
+        }
+        // 5. Sihirdar Vadisi: Map 11 (Classic, Swiftplay/Quickplay) - ONLY if not caught by above (e.g. URF/Bots)
+        else if (q.mapId === 11) {
+          groups['Sihirdar Vadisi'].push(q);
+        }
+        // 6. Fallback
+        else {
+          groups['Diğer'].push(q);
+        }
+      });
+
+      setGroupedQueues(groups);
+
+      // Select first available queue from the first non-empty group
+      for (const category of Object.keys(groups)) {
+        if (groups[category].length > 0) {
+          setSelectedQueueId(groups[category][0].id);
+          break;
+        }
       }
     } catch (error) {
       console.error('Failed to load queues:', error);
@@ -89,6 +120,9 @@ export default function CreateLobby({ visible, onClose, onSuccess }: CreateLobby
       onClose();
     } catch (error: any) {
       console.error('Failed to create lobby:', error);
+      if (onError) {
+        onError(error.message || 'Failed to create lobby');
+      }
     } finally {
       setCreating(false);
     }
@@ -112,20 +146,27 @@ export default function CreateLobby({ visible, onClose, onSuccess }: CreateLobby
             </View>
           ) : (
             <ScrollView style={styles.queueList}>
-              {queues.map((queue) => (
-                <Button
-                  key={queue.id}
-                  title={queue.description || queue.gameMode}
-                  onPress={() => setSelectedQueueId(queue.id)}
-                  buttonStyle={[
-                    styles.queueButton,
-                    selectedQueueId === queue.id && styles.queueButtonSelected
-                  ]}
-                  titleStyle={[
-                    styles.queueButtonText,
-                    selectedQueueId === queue.id && styles.queueButtonTextSelected
-                  ]}
-                />
+              {Object.entries(groupedQueues).map(([category, categoryQueues]) => (
+                categoryQueues.length > 0 && (
+                  <View key={category} style={styles.categoryContainer}>
+                    <Text style={styles.categoryHeader}>{category}</Text>
+                    {categoryQueues.map((queue) => (
+                      <Button
+                        key={queue.id}
+                        title={queue.description || queue.gameMode}
+                        onPress={() => setSelectedQueueId(queue.id)}
+                        buttonStyle={[
+                          styles.queueButton,
+                          selectedQueueId === queue.id && styles.queueButtonSelected
+                        ]}
+                        titleStyle={[
+                          styles.queueButtonText,
+                          selectedQueueId === queue.id && styles.queueButtonTextSelected
+                        ]}
+                      />
+                    ))}
+                  </View>
+                )
               ))}
             </ScrollView>
           )}
@@ -183,6 +224,17 @@ const styles = StyleSheet.create({
   queueList: {
     maxHeight: 400,
     marginBottom: 20,
+  },
+  categoryContainer: {
+    marginBottom: 16,
+  },
+  categoryHeader: {
+    color: '#888',
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    marginLeft: 4,
+    textTransform: 'uppercase',
   },
   queueButton: {
     backgroundColor: '#2a2a2a',
