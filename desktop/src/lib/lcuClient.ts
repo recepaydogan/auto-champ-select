@@ -4,6 +4,21 @@
 
 import type { LcuConfig } from './lcuConnection';
 
+export interface LobbyQueueInfo {
+  id?: number;
+  gameMode?: string;
+  mapId?: number;
+  assetMutator?: string;
+  numPlayersPerTeam?: number;
+  isCustom?: boolean;
+  category?: string;
+  gameSelectCategory?: string;
+  description?: string;
+  shortName?: string;
+  name?: string;
+  spectatorEnabled?: boolean;
+}
+
 export interface LcuEvent {
   uri: string;
   eventType: 'Create' | 'Update' | 'Delete';
@@ -842,7 +857,36 @@ export class LcuClient {
   /**
    * Creates a lobby with the specified queue ID
    */
-  async createLobby(queueId: number): Promise<void> {
+  async createLobby(queueId: number, queueInfo?: LobbyQueueInfo): Promise<void> {
+    // The new multiplayer practice tool (queue 3140) and other custom queues need a full custom lobby payload.
+    const isPracticeTool = queueId === 3140 || queueId === 830 || queueInfo?.gameMode === 'PRACTICETOOL';
+    const isCustomQueue = queueInfo?.isCustom === true
+      || queueInfo?.category === 'Custom'
+      || queueInfo?.gameSelectCategory === 'CreateCustom'
+      || isPracticeTool;
+
+    if (isCustomQueue) {
+      const payload = {
+        queueId,
+        isCustom: true,
+        customGameLobby: {
+          configuration: {
+            gameMode: queueInfo?.gameMode || 'PRACTICETOOL',
+            gameMutator: queueInfo?.assetMutator || '',
+            mapId: queueInfo?.mapId ?? 11,
+            mutators: { id: 1 },
+            spectatorPolicy: queueInfo?.spectatorEnabled === false ? 'NotAllowed' : 'AllAllowed',
+            teamSize: queueInfo?.numPlayersPerTeam ?? 5,
+          },
+          lobbyName: queueInfo?.name || queueInfo?.shortName || queueInfo?.description || 'Custom Lobby',
+          lobbyPassword: ''
+        }
+      };
+
+      await this.request('/lol-lobby/v2/lobby', 'POST', payload);
+      return;
+    }
+
     await this.request('/lol-lobby/v2/lobby', 'POST', { queueId });
   }
 }
@@ -859,4 +903,3 @@ export function getLcuClient(): LcuClient {
   }
   return lcuClientInstance;
 }
-

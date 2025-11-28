@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
     View,
     Text,
@@ -26,6 +26,7 @@ interface CustomModalProps {
     onClose?: () => void;
     children?: React.ReactNode;
     type?: 'info' | 'success' | 'warning' | 'error';
+    autoDismissMs?: number;
 }
 
 const getIconForType = (type: string) => {
@@ -62,9 +63,11 @@ export default function CustomModal({
     onClose,
     children,
     type = 'info',
+    autoDismissMs,
 }: CustomModalProps) {
     const color = getColorForType(type);
     const icon = getIconForType(type);
+    const timerRef = useRef<NodeJS.Timeout | null>(null);
 
     const getButtonStyle = (style?: string) => {
         switch (style) {
@@ -91,6 +94,22 @@ export default function CustomModal({
                 return styles.defaultButtonText;
         }
     };
+
+    useEffect(() => {
+        // Auto-dismiss non-critical modals to avoid lingering overlay blocks
+        if (visible && (type === 'success' || type === 'info') && buttons.length === 1 && buttons[0].text === 'OK') {
+            const timeout = autoDismissMs ?? 1500;
+            timerRef.current = setTimeout(() => {
+                onClose?.();
+            }, timeout);
+        }
+        return () => {
+            if (timerRef.current) {
+                clearTimeout(timerRef.current);
+                timerRef.current = null;
+            }
+        };
+    }, [visible, type, buttons, autoDismissMs, onClose]);
 
     return (
         <Modal

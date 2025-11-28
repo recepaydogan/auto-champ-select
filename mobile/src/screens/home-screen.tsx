@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Switch } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '@rneui/themed';
 import { supabase } from '../lib/supabase';
 import { Session } from '@supabase/supabase-js';
@@ -26,6 +27,8 @@ export default function HomeScreen({ session }: { session: Session }) {
     const [connectionAborted, setConnectionAborted] = useState(false);
     const [autoAccept, setAutoAccept] = useState(false);
     const [timeInQueue, setTimeInQueue] = useState(0);
+    const [estimatedQueueTime, setEstimatedQueueTime] = useState<number | null>(null);
+    const [queuePenaltySeconds, setQueuePenaltySeconds] = useState<number>(0);
 
     // Custom modal state
     const [modalVisible, setModalVisible] = useState(false);
@@ -49,10 +52,72 @@ export default function HomeScreen({ session }: { session: Session }) {
     const [serverReachable, setServerReachable] = useState(true);
     const statusCheckInterval = useRef<NodeJS.Timeout | null>(null);
     const autoAcceptRef = useRef(autoAccept);
+    const queueTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const queueStartRef = useRef<number | null>(null);
+    const lastQueueSeenRef = useRef<number | null>(null);
+
+    const stopQueueTimer = useCallback(() => {
+        if (queueTimerRef.current) {
+            clearInterval(queueTimerRef.current);
+            queueTimerRef.current = null;
+        }
+        queueStartRef.current = null;
+        lastQueueSeenRef.current = null;
+    }, []);
+
+    const startQueueTimer = useCallback((reportedSeconds: number) => {
+        const now = Date.now();
+        lastQueueSeenRef.current = now;
+        queueStartRef.current = now - reportedSeconds * 1000;
+
+        setTimeInQueue(reportedSeconds);
+
+        if (!queueTimerRef.current) {
+            queueTimerRef.current = setInterval(() => {
+                if (queueStartRef.current !== null) {
+                    const elapsed = Math.max(0, Math.floor((Date.now() - queueStartRef.current) / 1000));
+                    setTimeInQueue(elapsed);
+                }
+            }, 1000);
+        }
+    }, []);
+
+    const extractQueuePenalty = (searchContent: any): number => {
+        if (!searchContent) return 0;
+        const candidates: number[] = [];
+        if (Array.isArray(searchContent.errors)) {
+            searchContent.errors.forEach((e: any) => {
+                if (typeof e?.penaltyTimeRemaining === 'number') candidates.push(e.penaltyTimeRemaining);
+            });
+        }
+        if (typeof searchContent.penaltyTimeRemaining === 'number') candidates.push(searchContent.penaltyTimeRemaining);
+        if (typeof searchContent.lowPriorityData?.penaltyTimeRemaining === 'number') candidates.push(searchContent.lowPriorityData.penaltyTimeRemaining);
+        if (typeof searchContent.dodgeData?.penaltyTimeRemaining === 'number') candidates.push(searchContent.dodgeData.penaltyTimeRemaining);
+        return Math.max(0, ...(candidates.length ? candidates : [0]));
+    };
 
     useEffect(() => {
         autoAcceptRef.current = autoAccept;
     }, [autoAccept]);
+
+    // If connected but LCU goes down, reset lobby/phase and close creation
+    useEffect(() => {
+        if (connected && !desktopStatus.lcuConnected) {
+            setShowCreateLobby(false);
+            setGamePhase('None');
+            setLobby(null);
+            setQueuePenaltySeconds(0);
+        }
+    }, [connected, desktopStatus.lcuConnected]);
+
+    // If LCU disconnects while app is connected, drop back to home and close create lobby
+    useEffect(() => {
+        if (connected && !desktopStatus.lcuConnected) {
+            setShowCreateLobby(false);
+            setGamePhase('None');
+            setLobby(null);
+        }
+    }, [connected, desktopStatus.lcuConnected]);
 
     const lcuBridge = getLCUBridge();
 
@@ -108,9 +173,14 @@ export default function HomeScreen({ session }: { session: Session }) {
             setConnected(false);
             setConnectionState(RiftSocketState.DISCONNECTED);
             setGamePhase('None');
+            stopQueueTimer();
+            setTimeInQueue(0);
+            setEstimatedQueueTime(null);
+            setQueuePenaltySeconds(0);
             setLobby(null);
             setReadyCheck(null);
             setChampSelect(null);
+            setShowCreateLobby(false);
             setDesktopStatus({
                 riftConnected: false,
                 mobileConnected: false,
@@ -183,6 +253,68 @@ export default function HomeScreen({ session }: { session: Session }) {
             // Request initial status from desktop
             lcuBridge.requestStatus();
 
+            // Immediately fetch current gameflow phase and lobby data
+            // This ensures we get the current state right away when connecting
+            try {
+                const gameflowResult = await lcuBridge.request('/lol-gameflow/v1/session');
+                
+                if (gameflowResult.status === 200 && gameflowResult.content?.phase) {
+                    setGamePhase(gameflowResult.content.phase);
+                    
+                    // If we're already in a lobby, immediately fetch lobby data
+                    if (gameflowResult.content.phase === 'Lobby' || 
+                        gameflowResult.content.phase === 'Matchmaking' || 
+                        gameflowResult.content.phase === 'ReadyCheck') {
+                        console.log('[HomeScreen] Already in lobby/matchmaking, fetching initial lobby data');
+                        try {
+                            const lobbyResult = await lcuBridge.request('/lol-lobby/v2/lobby');
+                            if (lobbyResult.status === 200 && lobbyResult.content) {
+                               
+                                setLobby(lobbyResult.content);
+                            } else {
+                                console.warn('[HomeScreen] Lobby fetch returned non-200 status:', lobbyResult.status);
+                            }
+                        } catch (lobbyError) {
+                            console.error('[HomeScreen] Error fetching initial lobby:', lobbyError);
+                        }
+                        
+                        // Also fetch matchmaking search state if in queue
+                        if (gameflowResult.content.phase === 'Matchmaking') {
+                            try {
+                                const searchResult = await lcuBridge.request('/lol-matchmaking/v1/search');
+                                if (searchResult.status === 200 && searchResult.content) {
+                                    if (searchResult.content.isCurrentlyInQueue) {
+                                        const reported = searchResult.content.timeInQueue || 0;
+                                        startQueueTimer(reported);
+                                        setEstimatedQueueTime(searchResult.content.estimatedQueueTime || null);
+                                    }
+                                    setQueuePenaltySeconds(extractQueuePenalty(searchResult.content));
+                                }
+                            } catch (searchError) {
+                                console.error('[HomeScreen] Error fetching matchmaking search:', searchError);
+                            }
+                        }
+                    }
+                    
+                    // If we're in champ select, fetch champ select data
+                    if (gameflowResult.content.phase === 'ChampSelect') {
+                        try {
+                            const champSelectResult = await lcuBridge.request('/lol-champ-select/v1/session');
+                            if (champSelectResult.status === 200 && champSelectResult.content) {
+                                setChampSelect(champSelectResult.content);
+                            }
+                        } catch (champSelectError) {
+                            console.error('[HomeScreen] Error fetching initial champ select:', champSelectError);
+                        }
+                    }
+                } else {
+                    console.warn('[HomeScreen] Gameflow fetch returned invalid response:', gameflowResult.status, gameflowResult.content);
+                }
+            } catch (error) {
+                console.error('[HomeScreen] Failed to fetch initial gameflow state:', error);
+                // Continue anyway - observers will handle updates
+            }
+
             // Subscribe to Gameflow (Primary Source of Truth)
             // We don't call setupLCUObservers anymore, we use useEffects
         } catch (error: any) {
@@ -209,11 +341,9 @@ export default function HomeScreen({ session }: { session: Session }) {
     useEffect(() => {
         if (!connected) return;
 
-        console.log('[HomeScreen] Subscribing to Gameflow');
         let nonePhaseTimeout: NodeJS.Timeout | null = null;
 
         const unsubscribe = lcuBridge.observe('/lol-gameflow/v1/session', (result) => {
-            // console.log('[HomeScreen] Gameflow update:', result.status, result.content?.phase);
 
             if (result.status === 200 && result.content && result.content.phase) {
                 // Valid phase - clear any pending "None" timeout and set phase immediately
@@ -227,7 +357,6 @@ export default function HomeScreen({ session }: { session: Session }) {
                 // This handles transient 404s or empty responses during transitions
                 if (!nonePhaseTimeout && gamePhase !== 'None') {
                     nonePhaseTimeout = setTimeout(() => {
-                        console.log('[HomeScreen] Gameflow phase confirmed as None');
                         setGamePhase('None');
                         nonePhaseTimeout = null;
                     }, 500); // 500ms grace period
@@ -242,7 +371,6 @@ export default function HomeScreen({ session }: { session: Session }) {
         });
 
         return () => {
-            console.log('[HomeScreen] Unsubscribing from Gameflow');
             if (nonePhaseTimeout) clearTimeout(nonePhaseTimeout);
             unsubscribe();
         };
@@ -256,12 +384,48 @@ export default function HomeScreen({ session }: { session: Session }) {
             return;
         }
 
-        console.log('[HomeScreen] Subscribing to Lobby');
+        // Immediately fetch lobby data when entering lobby phase (in case observer hasn't fired yet)
+        const fetchInitialLobby = async () => {
+            try {
+                const result = await lcuBridge.request('/lol-lobby/v2/lobby');
+                if (result.status === 200 && result.content) {
+                    setLobby(result.content);
+                }
+            } catch (error) {
+                console.error('[HomeScreen] Failed to fetch initial lobby:', error);
+            }
+        };
+        
+        // Fetch initial lobby data when phase changes to lobby-related phases
+        // This ensures immediate data display when connecting while already in lobby
+        fetchInitialLobby();
+
         const unsubscribeLobby = lcuBridge.observe('/lol-lobby/v2/lobby', (result) => {
             if (result.status === 200 && result.content) {
-                setLobby(result.content);
-            } else {
+                setLobby((prev) => {
+                    const incoming = { ...result.content };
+                    const incomingMembers = Array.isArray(incoming.members) ? incoming.members : [];
+                    const prevMembers = Array.isArray(prev?.members) ? prev.members : [];
+
+                    // If server sends a transient empty members array while we still have members, keep previous to prevent flicker.
+                    if (incomingMembers.length === 0 && prevMembers.length > 0) {
+                        incoming.members = prevMembers;
+                        // Preserve localMember if missing or incomplete
+                        if (!incoming.localMember && prev?.localMember) {
+                            incoming.localMember = prev.localMember;
+                        }
+                    }
+
+                  
+                    return incoming;
+                });
+            } else if (result.status === 404) {
+                // 404 means no lobby - this is valid, clear it
+                console.log('[HomeScreen] Lobby observer - 404, no lobby exists');
                 setLobby(null);
+            } else {
+                // Other errors - don't clear lobby, might be transient
+                console.warn('[HomeScreen] Lobby observer - non-200 status:', result.status, 'keeping existing lobby data');
             }
         });
 
@@ -274,22 +438,53 @@ export default function HomeScreen({ session }: { session: Session }) {
     // Effect to observe Matchmaking Search (Active in Lobby, Matchmaking)
     const shouldObserveSearch = connected && (gamePhase === 'Lobby' || gamePhase === 'Matchmaking');
     useEffect(() => {
-        if (!shouldObserveSearch) return;
+        if (!shouldObserveSearch) {
+            stopQueueTimer();
+            setQueuePenaltySeconds(0);
+            return;
+        }
 
-        console.log('[HomeScreen] Subscribing to Matchmaking Search');
         const unsubscribeSearch = lcuBridge.observe('/lol-matchmaking/v1/search', (result) => {
-            if (result.status === 200 && result.content && result.content.isCurrentlyInQueue) {
-                setTimeInQueue(result.content.timeInQueue);
-            } else {
+            if (result.status === 200) {
+                if (!result.content) {
+                    // Ignore empty payload to prevent flicker
+                    return;
+                }
+                if (result.content.isCurrentlyInQueue) {
+                    const reported = typeof result.content.timeInQueue === 'number' ? result.content.timeInQueue : 0;
+                    startQueueTimer(reported);
+                    setEstimatedQueueTime(prev => (
+                        typeof result.content.estimatedQueueTime === 'number'
+                            ? result.content.estimatedQueueTime
+                            : prev
+                    ));
+                    setQueuePenaltySeconds(extractQueuePenalty(result.content));
+                    return;
+                }
+                setQueuePenaltySeconds(extractQueuePenalty(result.content));
+                // Explicitly not in queue; avoid clearing instantly if we just saw a queue state (debounce transient drops)
+                const now = Date.now();
+                if (lastQueueSeenRef.current && now - lastQueueSeenRef.current < 4000) {
+                    return;
+                }
+                stopQueueTimer();
                 setTimeInQueue(0);
-            }
+                setEstimatedQueueTime(null);
+                setQueuePenaltySeconds(0);
+            } else if (result.status === 404) {
+                // 404 indicates no search; clear values
+                stopQueueTimer();
+                setTimeInQueue(0);
+                setEstimatedQueueTime(null);
+                setQueuePenaltySeconds(0);
+            } // Ignore transient errors to avoid flicker
         });
 
         return () => {
-            console.log('[HomeScreen] Unsubscribing from Matchmaking Search');
             unsubscribeSearch();
+            stopQueueTimer();
         };
-    }, [shouldObserveSearch]);
+    }, [shouldObserveSearch, startQueueTimer, stopQueueTimer]);
 
     // Effect to observe Ready Check (Active in ReadyCheck)
     useEffect(() => {
@@ -299,14 +494,12 @@ export default function HomeScreen({ session }: { session: Session }) {
             return;
         }
 
-        console.log('[HomeScreen] Subscribing to Ready Check');
         const unsubscribeReadyCheck = lcuBridge.observe('/lol-matchmaking/v1/ready-check', (result) => {
             if (result.status === 200) {
                 setReadyCheck(result.content);
 
                 // Auto Accept Logic
                 if (autoAcceptRef.current && result.content && result.content.state === 'InProgress' && result.content.playerResponse === 'None') {
-                    console.log('[HomeScreen] Auto accepting match...');
                     handleAcceptReadyCheck();
                 }
             } else {
@@ -315,7 +508,6 @@ export default function HomeScreen({ session }: { session: Session }) {
         });
 
         return () => {
-            console.log('[HomeScreen] Unsubscribing from Ready Check');
             unsubscribeReadyCheck();
         };
     }, [connected, gamePhase]);
@@ -327,6 +519,23 @@ export default function HomeScreen({ session }: { session: Session }) {
             setChampSelect(null);
             return;
         }
+
+        // Immediately fetch champ select data when entering champ select phase
+        const fetchInitialChampSelect = async () => {
+            try {
+                const result = await lcuBridge.request('/lol-champ-select/v1/session');
+                if (result.status === 200 && result.content) {
+                    console.log('[HomeScreen] Initial champ select fetch on phase change');
+                    setChampSelect(result.content);
+                }
+            } catch (error) {
+                console.error('[HomeScreen] Failed to fetch initial champ select:', error);
+            }
+        };
+        
+        // Fetch initial champ select data when phase changes to ChampSelect
+        // This ensures immediate data display when connecting while already in champ select
+        fetchInitialChampSelect();
 
         console.log('[HomeScreen] Subscribing to Champ Select');
         const unsubscribeChampSelect = lcuBridge.observe('/lol-champ-select/v1/session', (result) => {
@@ -496,6 +705,8 @@ export default function HomeScreen({ session }: { session: Session }) {
                     champSelect={champSelect}
                     onPick={handlePickChampion}
                     onBan={() => { }} // TODO: Implement ban
+                    onError={(message) => showAlert('Error', message, undefined, 'error')}
+                    onSuccess={(message) => showAlert('Success', message, undefined, 'success')}
                 />
             );
         }
@@ -505,20 +716,36 @@ export default function HomeScreen({ session }: { session: Session }) {
                 <QueueScreen
                     onCancelQueue={handleCancelQueue}
                     timeInQueue={timeInQueue}
+                    estimatedQueueTime={estimatedQueueTime}
+                    penaltySeconds={queuePenaltySeconds}
                     readyCheck={readyCheck}
                     onAccept={handleAcceptReadyCheck}
                     onDecline={handleDeclineReadyCheck}
+                    autoAccept={autoAccept}
+                    onToggleAutoAccept={(val) => setAutoAccept(val)}
                 />
             );
         }
 
         if (gamePhase === 'Lobby') {
+            const handleLeaveAndCreate = async () => {
+                try {
+                    await handleLeaveLobby();
+                    setShowCreateLobby(true);
+                } catch (e) {
+                    console.error('Failed to leave lobby before creating new one', e);
+                }
+            };
             return (
                 <LobbyScreen
                     lobby={lobby}
                     onEnterQueue={handleEnterQueue}
                     onLeaveLobby={handleLeaveLobby}
                     onUpdateRoles={handleUpdateRoles}
+                    onOpenCreateLobby={handleLeaveAndCreate}
+                    estimatedQueueTime={estimatedQueueTime}
+                    onError={(message) => showAlert('Error', message, undefined, 'error')}
+                    onSuccess={(message) => showAlert('Success', message, undefined, 'success')}
                 />
             );
         }
@@ -535,7 +762,9 @@ export default function HomeScreen({ session }: { session: Session }) {
     };
 
     return (
+        <SafeAreaView style={styles.safeArea}>
         <View style={styles.container}>
+        
             {renderContent()}
 
             <CreateLobby
@@ -568,13 +797,19 @@ export default function HomeScreen({ session }: { session: Session }) {
                 onClose={() => setModalVisible(false)}
             />
         </View>
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
+    safeArea: {
+        flex: 1,
+        backgroundColor: '#0a0a0a',
+    },
     container: {
         flex: 1,
         backgroundColor: '#0a0a0a',
+        paddingTop: 12,
     },
     header: {
         paddingTop: 50,
@@ -616,6 +851,20 @@ const styles = StyleSheet.create({
         marginTop: 12,
         alignSelf: 'center',
         width: '80%',
+    },
+    statusBar: {
+        flexDirection: 'row',
+        justifyContent: 'space-around',
+        paddingVertical: 8,
+        paddingHorizontal: 12,
+        backgroundColor: '#111827',
+        borderBottomWidth: 1,
+        borderBottomColor: '#1f2937',
+    },
+    statusItem: {
+        color: '#d1d5db',
+        fontSize: 12,
+        fontWeight: '600',
     },
     autoAcceptLabel: {
         color: '#ffffff',

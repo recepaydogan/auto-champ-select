@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, Image } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Avatar } from '@rneui/themed';
 import { Session } from '@supabase/supabase-js';
 import { DesktopStatus } from '../lib/lcuBridge';
@@ -13,6 +14,7 @@ interface DashboardProps {
 
 export default function Dashboard({ session, desktopStatus, onCreateLobby, onSignOut }: DashboardProps) {
     return (
+        <SafeAreaView style={styles.safeArea}>
         <View style={styles.container}>
             <View style={styles.header}>
                 <Text style={styles.title}>Dashboard</Text>
@@ -61,11 +63,16 @@ export default function Dashboard({ session, desktopStatus, onCreateLobby, onSig
                     titleStyle={styles.signOutText}
                 />
             </View>
-        </View>
+            </View>
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
+    safeArea: {
+        flex: 1,
+        backgroundColor: '#0a0a0a',
+    },
     container: {
         flex: 1,
         backgroundColor: '#0a0a0a',

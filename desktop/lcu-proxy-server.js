@@ -276,10 +276,25 @@ const server = http.createServer(async (req, res) => {
       });
 
       proxyRes.on('end', () => {
-        console.log(`[Proxy] ${lcuMethod} ${lcuPath} -> ${proxyRes.statusCode}`);
-        if (proxyRes.statusCode >= 400) {
+        // Check if this is an expected error (not a real failure)
+        const isExpectedError = proxyRes.statusCode === 404 && (
+          responseBody.includes('No matchmaking search exists') ||
+          responseBody.includes('No active delegate') ||
+          responseBody.includes('RESOURCE_NOT_FOUND') ||
+          responseBody.includes('RPC_ERROR')
+        );
+
+        if (proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) {
+          // Only log successful requests for debugging specific endpoints
+          if (lcuPath.includes('queues') || lcuPath.includes('lobby') && lcuMethod !== 'GET') {
+            console.log(`[Proxy] ${lcuMethod} ${lcuPath} -> ${proxyRes.statusCode}`);
+          }
+        } else if (proxyRes.statusCode >= 400 && !isExpectedError) {
+          // Only log unexpected errors
+          console.log(`[Proxy] ${lcuMethod} ${lcuPath} -> ${proxyRes.statusCode}`);
           console.log(`[Proxy] Error response: ${responseBody.substring(0, 500)}`);
         }
+        // Expected errors (404s for missing resources) are silently ignored
         res.end();
       });
     });

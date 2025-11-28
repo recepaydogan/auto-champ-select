@@ -8,6 +8,13 @@ interface GameQueue {
   id: number
   queueAvailability: string
   mapId: number
+  assetMutator?: string
+  numPlayersPerTeam?: number
+  isCustom?: boolean
+  gameSelectCategory?: string
+  shortName?: string
+  name?: string
+  spectatorEnabled?: boolean
 }
 
 type MappedQueueList = { [key: string]: GameQueue[] }
@@ -362,9 +369,12 @@ export default function CreateLobby({ onClose, onSuccess }: CreateLobbyProps) {
   const handleCreateLobby = async () => {
     if (!selectedQueueId) return
 
+    const selectedQueue = (selectedSection ? availableQueues[selectedSection]?.find(q => q.id === selectedQueueId) : undefined)
+      || queues.find(q => q.id === selectedQueueId)
+
     try {
       setCreating(true)
-      await createLobby(selectedQueueId)
+      await createLobby(selectedQueueId, selectedQueue)
       onSuccess()
       onClose()
     } catch (error: unknown) {

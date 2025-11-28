@@ -1,20 +1,26 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Animated, Easing } from 'react-native';
+import { View, Text, StyleSheet, Animated, Easing, Switch } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '@rneui/themed';
 
 interface QueueScreenProps {
     onCancelQueue: () => void;
     timeInQueue: number;
+    estimatedQueueTime?: number | null;
+    penaltySeconds?: number;
     readyCheck?: any;
     onAccept?: () => void;
     onDecline?: () => void;
+    autoAccept: boolean;
+    onToggleAutoAccept: (value: boolean) => void;
 }
 
-export default function QueueScreen({ onCancelQueue, timeInQueue, readyCheck, onAccept, onDecline }: QueueScreenProps) {
+export default function QueueScreen({ onCancelQueue, timeInQueue, estimatedQueueTime, penaltySeconds = 0, readyCheck, onAccept, onDecline, autoAccept, onToggleAutoAccept }: QueueScreenProps) {
     const pulseAnim = useRef(new Animated.Value(1)).current;
 
     const isReadyCheck = readyCheck?.state === 'InProgress';
     const playerResponse = readyCheck?.playerResponse;
+    const READY_CHECK_LIMIT = 12; // LCU timer counts up; we show countdown from expected max
 
     useEffect(() => {
         Animated.loop(
@@ -41,7 +47,26 @@ export default function QueueScreen({ onCancelQueue, timeInQueue, readyCheck, on
         return `${mins}:${secs.toString().padStart(2, '0')}`;
     };
 
+    const formatEstimatedTime = (seconds: number): string => {
+        if (seconds < 60) {
+            return `${Math.round(seconds)} saniye`;
+        }
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = Math.round(seconds % 60);
+        if (remainingSeconds === 0) {
+            return `${minutes} dakika`;
+        }
+        return `${minutes} dakika ${remainingSeconds} saniye`;
+    };
+
+    const getReadyCheckRemaining = () => {
+        if (!readyCheck?.timer && readyCheck?.timer !== 0) return READY_CHECK_LIMIT;
+        const remaining = READY_CHECK_LIMIT - readyCheck.timer;
+        return Math.max(0, Math.round(remaining));
+    };
+
     return (
+        <SafeAreaView style={styles.safeArea}>
         <View style={styles.container}>
             <View style={styles.content}>
                 <Animated.View style={[styles.pulseContainer, { transform: [{ scale: pulseAnim }] }]}>
@@ -53,11 +78,36 @@ export default function QueueScreen({ onCancelQueue, timeInQueue, readyCheck, on
                 <Text style={styles.statusText}>
                     {isReadyCheck ? 'Match Found!' : 'Finding Match...'}
                 </Text>
-                {!isReadyCheck && <Text style={styles.timerText}>{formatTime(timeInQueue)}</Text>}
+
+                <View style={styles.autoAcceptRow}>
+                    <Text style={styles.autoAcceptLabel}>Auto Accept</Text>
+                    <Switch
+                        value={autoAccept}
+                        onValueChange={onToggleAutoAccept}
+                        thumbColor={autoAccept ? '#22c55e' : '#f4f3f4'}
+                        trackColor={{ true: '#166534', false: '#555' }}
+                    />
+                </View>
+                {!isReadyCheck && (
+                    <View style={styles.timeContainer}>
+                        <Text style={styles.timerText}>Time in Queue: {formatTime(timeInQueue)}</Text>
+                        {estimatedQueueTime !== null && estimatedQueueTime !== undefined && (
+                            <Text style={styles.estimatedTimeText}>
+                                Estimated: {formatEstimatedTime(estimatedQueueTime)}
+                            </Text>
+                        )}
+                        {penaltySeconds > 0 && (
+                            <View style={styles.penaltyBanner}>
+                                <Text style={styles.penaltyTitle}>Queue Penalty Active</Text>
+                                <Text style={styles.penaltyText}>Waiting {formatTime(penaltySeconds)} before matchmaking starts.</Text>
+                            </View>
+                        )}
+                    </View>
+                )}
 
                 {isReadyCheck && (
                     <View style={styles.readyCheckContainer}>
-                        <Text style={styles.timerText}>{readyCheck.timer}s</Text>
+                        <Text style={styles.timerText}>{getReadyCheckRemaining()}s</Text>
                         <View style={styles.readyCheckButtons}>
                             <Button
                                 title="Accept"
@@ -95,10 +145,15 @@ export default function QueueScreen({ onCancelQueue, timeInQueue, readyCheck, on
                 </View>
             )}
         </View>
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
+    safeArea: {
+        flex: 1,
+        backgroundColor: '#0a0a0a',
+    },
     container: {
         flex: 1,
         backgroundColor: '#0a0a0a',
@@ -139,10 +194,52 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         marginBottom: 10,
     },
+    timeContainer: {
+        alignItems: 'center',
+        marginTop: 10,
+        },
+    autoAcceptRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        marginTop: 10,
+    },
+    autoAcceptLabel: {
+        color: '#ffffff',
+        fontSize: 16,
+        fontWeight: '600',
+    },
     timerText: {
         color: '#a3a3a3',
         fontSize: 18,
         fontVariant: ['tabular-nums'],
+        marginBottom: 5,
+    },
+    estimatedTimeText: {
+        color: '#eab308',
+        fontSize: 14,
+        fontWeight: '500',
+    },
+    penaltyBanner: {
+        marginTop: 8,
+        backgroundColor: '#7f1d1d',
+        padding: 10,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: '#ef4444',
+        width: '100%',
+    },
+    penaltyTitle: {
+        color: '#fca5a5',
+        fontSize: 14,
+        fontWeight: '700',
+        marginBottom: 4,
+        textAlign: 'center',
+    },
+    penaltyText: {
+        color: '#fca5a5',
+        fontSize: 12,
+        textAlign: 'center',
     },
     footer: {
         marginBottom: 40,

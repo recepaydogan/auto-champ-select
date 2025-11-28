@@ -2,7 +2,7 @@
 // Helper functions to interact with League Client Update (LCU) endpoints.
 // Uses the LCU client for actual implementation.
 
-import { getLcuClient } from './lib/lcuClient';
+import { getLcuClient, type LobbyQueueInfo } from './lib/lcuClient';
 
 const client = getLcuClient();
 
@@ -166,11 +166,11 @@ export async function getDefaultGameQueues(): Promise<number[]> {
 /**
  * Creates a lobby with the specified queue ID
  */
-export async function createLobby(queueId: number): Promise<void> {
+export async function createLobby(queueId: number, queueInfo?: LobbyQueueInfo): Promise<void> {
     if (!client.isConnected()) {
         throw new Error('LCU not connected');
     }
-    await client.createLobby(queueId);
+    await client.createLobby(queueId, queueInfo);
 }
 
 /**

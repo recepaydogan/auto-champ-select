@@ -14,28 +14,44 @@ interface SpellPickerProps {
     onClose: () => void;
     spells: Spell[];
     currentSpellId?: number;
+    allowedSpellIds?: number[] | null;
 }
 
-export default function SpellPicker({ visible, onSelect, onClose, spells, currentSpellId }: SpellPickerProps) {
+export default function SpellPicker({ visible, onSelect, onClose, spells, currentSpellId, allowedSpellIds }: SpellPickerProps) {
+    const allowedSet = allowedSpellIds && allowedSpellIds.length > 0 ? new Set(allowedSpellIds) : null;
     return (
         <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
             <View style={styles.overlay}>
                 <View style={styles.container}>
                     <Text style={styles.title}>Select Summoner Spell</Text>
                     <ScrollView contentContainerStyle={styles.grid}>
-                        {spells.map((spell) => (
-                            <TouchableOpacity
-                                key={spell.id}
-                                style={[
-                                    styles.spellItem,
-                                    currentSpellId === spell.id && styles.selectedSpell
-                                ]}
-                                onPress={() => onSelect(spell.id)}
-                            >
-                                <Image source={{ uri: spell.iconPath }} style={styles.spellIcon} />
-                                <Text style={styles.spellName}>{spell.name}</Text>
-                            </TouchableOpacity>
-                        ))}
+                        {spells.map((spell) => {
+                            const isAllowed = allowedSet ? allowedSet.has(spell.id) : true;
+                            const iconUri = spell.iconPath && spell.iconPath.trim().length > 0 ? spell.iconPath : undefined;
+                            return (
+                                <TouchableOpacity
+                                    key={spell.id}
+                                    style={[
+                                        styles.spellItem,
+                                        currentSpellId === spell.id && styles.selectedSpell,
+                                        !isAllowed && styles.disabledSpell
+                                    ]}
+                                    onPress={() => {
+                                        if (!isAllowed) return;
+                                        onSelect(spell.id);
+                                    }}
+                                    disabled={!isAllowed}
+                                >
+                                    {iconUri ? (
+                                        <Image source={{ uri: iconUri }} style={styles.spellIcon} />
+                                    ) : (
+                                        <View style={[styles.spellIcon, styles.spellPlaceholder]} />
+                                    )}
+                                    <Text style={styles.spellName}>{spell.name}</Text>
+                                    {!isAllowed && <Text style={styles.spellNotAllowed}>Not allowed</Text>}
+                                </TouchableOpacity>
+                            );
+                        })}
                     </ScrollView>
                     <Button title="Cancel" onPress={onClose} buttonStyle={styles.cancelButton} />
                 </View>
@@ -84,16 +100,28 @@ const styles = StyleSheet.create({
         borderColor: '#d4af37',
         backgroundColor: '#3a3a3a',
     },
+    disabledSpell: {
+        opacity: 0.4,
+    },
     spellIcon: {
         width: 50,
         height: 50,
         borderRadius: 8,
         marginBottom: 5,
     },
+    spellPlaceholder: {
+        backgroundColor: '#2a2a2a',
+    },
     spellName: {
         color: '#ccc',
         fontSize: 10,
         textAlign: 'center',
+    },
+    spellNotAllowed: {
+        color: '#f87171',
+        fontSize: 9,
+        textAlign: 'center',
+        marginTop: 2,
     },
     cancelButton: {
         backgroundColor: '#757575',

@@ -7,6 +7,16 @@ import ConnectionApproval from './components/ConnectionApproval'
 import ConnectionStatus, { type ConnectionStatusState } from './components/ConnectionStatus'
 import CustomModal, { type CustomModalButton } from './components/CustomModal'
 import { getBridgeManager } from './bridge/bridgeManager'
+import { getGameQueues, getEnabledGameQueues, getDefaultGameQueues } from './lcuHelper'
+
+interface GameQueue {
+  category: string
+  gameMode: string
+  description: string
+  id: number
+  queueAvailability: string
+  mapId: number
+}
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -21,6 +31,13 @@ function App() {
   const [pendingConnectionIdentity, setPendingConnectionIdentity] = useState<string | null>(null)
   const [pendingConnectionResolve, setPendingConnectionResolve] = useState<((approved: boolean) => void) | null>(null)
   
+  // Queue data state - fetched when LCU is connected, available for use in components
+  const [queues, setQueues] = useState<GameQueue[]>([])
+  const [enabledGameQueues, setEnabledGameQueues] = useState<number[]>([])
+  const [defaultGameQueues, setDefaultGameQueues] = useState<number[]>([])
+  const [queuesLoading, setQueuesLoading] = useState(false)
+  
+  console.log("DEBUG - queues:", queues?.filter(q => q.queueAvailability === 'Available'))
   // Custom modal state
   const [modalVisible, setModalVisible] = useState(false)
   const [modalConfig, setModalConfig] = useState<{
@@ -103,7 +120,66 @@ function App() {
     if (session && !isConnected && !isConnecting) {
       handleConnect()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session])
+
+  // Fetch queues when LCU is connected
+  useEffect(() => {
+    if (!connectionStatus.lcuConnected) {
+      // Clear queues when LCU disconnects
+      setQueues([])
+      setEnabledGameQueues([])
+      setDefaultGameQueues([])
+      return
+    }
+
+    const fetchQueues = async () => {
+      try {
+        setQueuesLoading(true)
+        console.log('[App] LCU connected, fetching queues...')
+        
+        const [queuesData, enabledData, defaultData] = await Promise.all([
+          getGameQueues(),
+          getEnabledGameQueues(),
+          getDefaultGameQueues()
+        ])
+        
+        const safeQueues = Array.isArray(queuesData) ? queuesData : []
+        const safeEnabled = Array.isArray(enabledData) ? enabledData : []
+        const safeDefault = Array.isArray(defaultData) ? defaultData : []
+        
+        setQueues(safeQueues)
+        setEnabledGameQueues(safeEnabled)
+        setDefaultGameQueues(safeDefault)
+        
+        console.log('[App] Queues fetched successfully:', {
+          queues: safeQueues.length,
+          enabled: safeEnabled.length,
+          default: safeDefault.length,
+          queueIds: safeQueues.map(q => q.id).slice(0, 5) // Log first 5 queue IDs
+        })
+      } catch (error: any) {
+        console.error('[App] Failed to fetch queues:', error)
+        // Don't show error modal for queue fetching failures - it's not critical
+      } finally {
+        setQueuesLoading(false)
+      }
+    }
+
+    fetchQueues()
+  }, [connectionStatus.lcuConnected])
+
+  // Log queue data when it changes (satisfies linter and provides debugging info)
+  useEffect(() => {
+    if (queues.length > 0 || enabledGameQueues.length > 0 || defaultGameQueues.length > 0) {
+      console.log('[App] Queue data available:', {
+        queuesCount: queues.length,
+        enabledCount: enabledGameQueues.length,
+        defaultCount: defaultGameQueues.length,
+        loading: queuesLoading
+      })
+    }
+  }, [queues, enabledGameQueues, defaultGameQueues, queuesLoading])
 
   const handleConnect = async () => {
     if (!session?.user?.id) {

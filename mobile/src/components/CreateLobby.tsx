@@ -11,6 +11,8 @@ interface GameQueue {
   queueAvailability: string;
   mapId: number;
   isCustom?: boolean;
+  shortName?: string;
+  name?: string;
 }
 
 interface CreateLobbyProps {
@@ -28,7 +30,6 @@ export default function CreateLobby({ visible, onClose, onSuccess, onError }: Cr
   const [creating, setCreating] = useState(false);
 
   const lcuBridge = getLCUBridge();
-  console.log("queues", queues);
   useEffect(() => {
     if (visible && lcuBridge.getIsConnected()) {
       loadQueues();
@@ -42,13 +43,30 @@ export default function CreateLobby({ visible, onClose, onSuccess, onError }: Cr
 
       const queuesResult = await lcuBridge.request('/lol-game-queues/v1/queues');
       let allQueues: GameQueue[] = queuesResult.content || [];
-      console.log("allQueues", allQueues);
+      
+      // Unwanted queue patterns to exclude
+      const unwantedPatterns = [
+        '1. eğitim bölümü',
+        '2. eğitim bölümü',
+        '3. eğitim bölümü',
+        'team fight tactics eğitim',
+        'Rastgele ultra rekabet faktörü clas'
+      ];
+      
+      // Helper function to check if queue matches unwanted patterns
+      const isUnwantedQueue = (q: GameQueue): boolean => {
+        const searchText = `${q.description || ''} ${q.name || ''} ${q.shortName || ''}`.toLowerCase();
+        return unwantedPatterns.some(pattern => searchText.includes(pattern.toLowerCase()));
+      };
+      
       // Filter logic:
       // 1. Must be 'Available'
       // 2. Must NOT be custom (isCustom === false), UNLESS it is Practice Tool (id 3140)
+      // 3. Must NOT match unwanted patterns
       const validQueues = allQueues.filter(q =>
         q.queueAvailability === 'Available' &&
-        (!q.isCustom || q.id === 3140)
+        (!q.isCustom || q.id === 3140) &&
+        !isUnwantedQueue(q)
       );
 
       console.log('[CreateLobby] Valid queues count:', validQueues.length);
@@ -115,13 +133,81 @@ export default function CreateLobby({ visible, onClose, onSuccess, onError }: Cr
 
     try {
       setCreating(true);
-      await lcuBridge.request('/lol-lobby/v2/lobby', 'POST', { queueId: selectedQueueId });
+      
+      // Find the selected queue for logging
+      let selectedQueue: GameQueue | undefined;
+      for (const categoryQueues of Object.values(groupedQueues)) {
+        selectedQueue = categoryQueues.find(q => q.id === selectedQueueId);
+        if (selectedQueue) break;
+      }
+      
+      console.log('[CreateLobby] Creating lobby with queue:', {
+        queueId: selectedQueueId,
+        queueName: selectedQueue?.shortName || selectedQueue?.description || selectedQueue?.gameMode,
+        isCustom: selectedQueue?.isCustom,
+        gameMode: selectedQueue?.gameMode,
+        queueDetails: selectedQueue
+      });
+      
+      // Check if there's an existing lobby and delete it first
+      try {
+        const existingLobby = await lcuBridge.request('/lol-lobby/v2/lobby');
+        if (existingLobby.status === 200 && existingLobby.content) {
+          console.log('[CreateLobby] Existing lobby found, deleting it first');
+          await lcuBridge.request('/lol-lobby/v2/lobby', 'DELETE');
+          // Wait a moment for the lobby to be fully deleted
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (e) {
+        // No existing lobby, that's fine
+        console.log('[CreateLobby] No existing lobby to delete');
+      }
+      
+      // For custom practice tool queues, try with mapId included
+      let result;
+      if (selectedQueue?.isCustom && selectedQueue?.gameMode === 'PRACTICETOOL') {
+        console.log('[CreateLobby] Creating custom practice tool lobby with mapId');
+        // Try with mapId included
+        const requestBody: any = { queueId: selectedQueueId };
+        if (selectedQueue.mapId) {
+          requestBody.mapId = selectedQueue.mapId;
+        }
+        result = await lcuBridge.request('/lol-lobby/v2/lobby', 'POST', requestBody);
+      } else {
+        // Regular lobby creation
+        result = await lcuBridge.request('/lol-lobby/v2/lobby', 'POST', { queueId: selectedQueueId });
+      }
+      
+      console.log('[CreateLobby] Lobby creation response:', result);
+      
+      // Check if response indicates an error
+      if (result.content && result.content.error) {
+        throw new Error(result.content.error);
+      }
+      
       onSuccess();
       onClose();
     } catch (error: any) {
-      console.error('Failed to create lobby:', error);
+      console.error('[CreateLobby] Failed to create lobby:', {
+        error,
+        queueId: selectedQueueId,
+        errorMessage: error.message,
+        errorContent: error.content || error.status,
+        responseStatus: error.status
+      });
+      
+      // Extract error message from response
+      let errorMessage = 'Failed to create lobby';
+      if (error.content?.error) {
+        errorMessage = `Lobby creation failed: ${error.content.error}`;
+      } else if (error.message) {
+        errorMessage = error.message;
+      } else if (error.content?.message) {
+        errorMessage = error.content.message;
+      }
+      
       if (onError) {
-        onError(error.message || 'Failed to create lobby');
+        onError(errorMessage);
       }
     } finally {
       setCreating(false);
@@ -153,7 +239,7 @@ export default function CreateLobby({ visible, onClose, onSuccess, onError }: Cr
                     {categoryQueues.map((queue) => (
                       <Button
                         key={queue.id}
-                        title={queue.description || queue.gameMode}
+                        title={queue.shortName || queue.description || queue.gameMode}
                         onPress={() => setSelectedQueueId(queue.id)}
                         buttonStyle={[
                           styles.queueButton,
