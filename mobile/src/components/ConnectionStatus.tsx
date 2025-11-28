@@ -35,37 +35,30 @@ const StatusItem = ({ label, connected, hint }: StatusItemProps) => (
 );
 
 export default function ConnectionStatus({ status, onConnect, onDisconnect, loading }: ConnectionStatusProps) {
-    const allConnected = status.riftConnected && status.desktopOnline && status.mobileConnected;
-    const partiallyConnected = status.mobileConnected;
-    const canConnect = status.desktopOnline && !partiallyConnected;
+    // Only display Rift/desktop status; hide mobile row
+    const allConnected = status.riftConnected && status.desktopOnline;
+    const partiallyConnected = false;
+    const canConnect = status.desktopOnline;
 
     const getInstructions = () => {
         if (!status.riftConnected) {
             return {
                 title: 'Checking Server...',
                 message: 'Connecting to the Rift server...',
-                icon: '🔄',
+                icon: '🛰️',
             };
         }
         if (!status.desktopOnline) {
             return {
                 title: 'Desktop App Offline',
                 message: 'Open the desktop app and sign in with the same account. We\'ll detect it automatically.',
-                icon: '💻',
+                icon: '🖥️',
             };
         }
-        if (!status.mobileConnected) {
-            return {
-                title: 'Desktop Ready!',
-                message: 'Your desktop is online. Tap Connect to pair your devices.',
-                icon: '✅',
-            };
-        }
-
         return {
-            title: 'All Systems Ready',
-            message: 'You\'re connected and ready to control League!',
-            icon: '✨',
+            title: 'Desktop Ready!',
+            message: 'Your desktop is online. Tap Connect to pair your devices.',
+            icon: '🚀',
         };
     };
 
@@ -89,13 +82,6 @@ export default function ConnectionStatus({ status, onConnect, onDisconnect, load
                     connected={status.desktopOnline}
                     hint="Open desktop app & sign in"
                 />
-
-                <StatusItem
-                    label="Mobile Connected"
-                    connected={status.mobileConnected}
-                    hint="Tap Connect below"
-                />
-
 
             </View>
 
@@ -134,7 +120,7 @@ export default function ConnectionStatus({ status, onConnect, onDisconnect, load
             {/* Overall Status Banner */}
             {allConnected && (
                 <View style={styles.successBanner}>
-                    <Text style={styles.successIcon}>✓</Text>
+                    <Text style={styles.successIcon}>✅</Text>
                     <Text style={styles.successText}>All systems connected!</Text>
                 </View>
             )}

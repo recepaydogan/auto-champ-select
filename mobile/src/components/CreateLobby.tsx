@@ -34,9 +34,14 @@ export default function CreateLobby({ visible, onClose, onSuccess, onError }: Cr
     if (visible && lcuBridge.getIsConnected()) {
       loadQueues();
     }
+    if (visible && !lcuBridge.getIsConnected()) {
+      // If not connected, just close silently
+      onClose();
+    }
   }, [visible]);
 
   const loadQueues = async () => {
+    if (!lcuBridge.getIsConnected()) return;
     try {
       setLoading(true);
       console.log('[CreateLobby] Starting to load queues...');
@@ -127,6 +132,10 @@ export default function CreateLobby({ visible, onClose, onSuccess, onError }: Cr
   };
 
   const handleCreateLobby = async () => {
+    if (!lcuBridge.getIsConnected()) {
+      onClose();
+      return;
+    }
     if (!selectedQueueId) {
       return;
     }
@@ -149,36 +158,23 @@ export default function CreateLobby({ visible, onClose, onSuccess, onError }: Cr
         queueDetails: selectedQueue
       });
       
-      // Check if there's an existing lobby and delete it first
-      try {
-        const existingLobby = await lcuBridge.request('/lol-lobby/v2/lobby');
-        if (existingLobby.status === 200 && existingLobby.content) {
-          console.log('[CreateLobby] Existing lobby found, deleting it first');
-          await lcuBridge.request('/lol-lobby/v2/lobby', 'DELETE');
-          // Wait a moment for the lobby to be fully deleted
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      } catch (e) {
-        // No existing lobby, that's fine
-        console.log('[CreateLobby] No existing lobby to delete');
-      }
-      
-      // For custom practice tool queues, try with mapId included
+      // Try to switch queue without dropping lobby/members
       let result;
-      if (selectedQueue?.isCustom && selectedQueue?.gameMode === 'PRACTICETOOL') {
-        console.log('[CreateLobby] Creating custom practice tool lobby with mapId');
-        // Try with mapId included
-        const requestBody: any = { queueId: selectedQueueId };
-        if (selectedQueue.mapId) {
-          requestBody.mapId = selectedQueue.mapId;
-        }
-        result = await lcuBridge.request('/lol-lobby/v2/lobby', 'POST', requestBody);
-      } else {
-        // Regular lobby creation
-        result = await lcuBridge.request('/lol-lobby/v2/lobby', 'POST', { queueId: selectedQueueId });
+      const requestBody: any = { queueId: selectedQueueId };
+      if (selectedQueue?.isCustom && selectedQueue?.gameMode === 'PRACTICETOOL' && selectedQueue.mapId) {
+        requestBody.mapId = selectedQueue.mapId;
+      }
+
+      // 1) Preferred: POST to lobby with queueId (LCU updates existing lobby without kicking members)
+      result = await lcuBridge.request('/lol-lobby/v2/lobby', 'POST', requestBody);
+
+      // 2) If POST not allowed, try PATCH as fallback
+      if (result.status >= 400) {
+        console.log('[CreateLobby] POST failed, attempting PATCH to update lobby queue');
+        result = await lcuBridge.request('/lol-lobby/v2/lobby', 'PATCH', requestBody);
       }
       
-      console.log('[CreateLobby] Lobby creation response:', result);
+      console.log('[CreateLobby] Lobby creation/switch response:', result);
       
       // Check if response indicates an error
       if (result.content && result.content.error) {

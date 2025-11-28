@@ -56,6 +56,20 @@ export default function HomeScreen({ session }: { session: Session }) {
     const queueStartRef = useRef<number | null>(null);
     const lastQueueSeenRef = useRef<number | null>(null);
 
+    const lcuBridge = getLCUBridge();
+    const ensureConnected = useCallback(() => {
+        if (!lcuBridge.getIsConnected()) {
+            setConnected(false);
+            setGamePhase('None');
+            setLobby(null);
+            setChampSelect(null);
+            setReadyCheck(null);
+            setShowCreateLobby(false);
+            return false;
+        }
+        return true;
+    }, [lcuBridge]);
+
     const stopQueueTimer = useCallback(() => {
         if (queueTimerRef.current) {
             clearInterval(queueTimerRef.current);
@@ -118,8 +132,6 @@ export default function HomeScreen({ session }: { session: Session }) {
             setLobby(null);
         }
     }, [connected, desktopStatus.lcuConnected]);
-
-    const lcuBridge = getLCUBridge();
 
     // Custom alert function
     const showAlert = useCallback((
@@ -377,7 +389,7 @@ export default function HomeScreen({ session }: { session: Session }) {
     }, [connected]);
 
     // Effect to observe Lobby and Matchmaking (Active in Lobby, Matchmaking, ReadyCheck)
-    const shouldObserveLobby = connected && (gamePhase === 'Lobby' || gamePhase === 'Matchmaking' || gamePhase === 'ReadyCheck');
+    const shouldObserveLobby = connected;
     useEffect(() => {
         if (!shouldObserveLobby) {
             setLobby(null);
@@ -400,32 +412,40 @@ export default function HomeScreen({ session }: { session: Session }) {
         // This ensures immediate data display when connecting while already in lobby
         fetchInitialLobby();
 
-        const unsubscribeLobby = lcuBridge.observe('/lol-lobby/v2/lobby', (result) => {
+        const unsubscribeLobby = lcuBridge.observe('/lol-lobby/v2/lobby', async (result) => {
             if (result.status === 200 && result.content) {
-                setLobby((prev) => {
+                setLobby((prev: any) => {
                     const incoming = { ...result.content };
                     const incomingMembers = Array.isArray(incoming.members) ? incoming.members : [];
                     const prevMembers = Array.isArray(prev?.members) ? prev.members : [];
 
-                    // If server sends a transient empty members array while we still have members, keep previous to prevent flicker.
+                    // If server sends transient empty members while we had members, keep previous members/localMember to avoid flicker
                     if (incomingMembers.length === 0 && prevMembers.length > 0) {
                         incoming.members = prevMembers;
-                        // Preserve localMember if missing or incomplete
                         if (!incoming.localMember && prev?.localMember) {
                             incoming.localMember = prev.localMember;
                         }
                     }
-
-                  
                     return incoming;
                 });
-            } else if (result.status === 404) {
-                // 404 means no lobby - this is valid, clear it
-                console.log('[HomeScreen] Lobby observer - 404, no lobby exists');
+                return;
+            }
+            if (result.status === 404) {
                 setLobby(null);
-            } else {
-                // Other errors - don't clear lobby, might be transient
-                console.warn('[HomeScreen] Lobby observer - non-200 status:', result.status, 'keeping existing lobby data');
+                setGamePhase('None');
+                return;
+            }
+            // On transient/non-200, attempt a one-off refetch to stay current
+            try {
+                const retry = await lcuBridge.request('/lol-lobby/v2/lobby');
+                if (retry.status === 200 && retry.content) {
+                    setLobby(retry.content);
+                } else if (retry.status === 404) {
+                    setLobby(null);
+                    setGamePhase('None');
+                }
+            } catch {
+                // swallow errors; next observer update will retry
             }
         });
 
@@ -553,42 +573,43 @@ export default function HomeScreen({ session }: { session: Session }) {
     }, [connected, gamePhase]);
 
     const handleEnterQueue = async () => {
+        if (!ensureConnected()) return;
         try {
             await lcuBridge.request('/lol-lobby/v2/lobby/matchmaking/search', 'POST');
-            showAlert('Success', 'Entered queue', undefined, 'success');
         } catch (error: any) {
             showAlert('Error', error.message || 'Failed to enter queue', undefined, 'error');
         }
     };
 
     const handleCancelQueue = async () => {
+        if (!ensureConnected()) return;
         try {
             await lcuBridge.request('/lol-lobby/v2/lobby/matchmaking/search', 'DELETE');
-            showAlert('Success', 'Left queue', undefined, 'success');
         } catch (error: any) {
             showAlert('Error', error.message || 'Failed to leave queue', undefined, 'error');
         }
     };
 
     const handleAcceptReadyCheck = async () => {
+        if (!ensureConnected()) return;
         try {
             await lcuBridge.request('/lol-matchmaking/v1/ready-check/accept', 'POST');
-            showAlert('Success', 'Accepted match', undefined, 'success');
         } catch (error: any) {
             showAlert('Error', error.message || 'Failed to accept', undefined, 'error');
         }
     };
 
     const handleDeclineReadyCheck = async () => {
+        if (!ensureConnected()) return;
         try {
             await lcuBridge.request('/lol-matchmaking/v1/ready-check/decline', 'POST');
-            showAlert('Success', 'Declined match', undefined, 'success');
         } catch (error: any) {
             showAlert('Error', error.message || 'Failed to decline', undefined, 'error');
         }
     };
 
     const handleLeaveLobby = async () => {
+        if (!ensureConnected()) return;
         try {
             await lcuBridge.request('/lol-lobby/v2/lobby', 'DELETE');
             // Optimistic update to ensure immediate navigation
@@ -600,6 +621,7 @@ export default function HomeScreen({ session }: { session: Session }) {
     };
 
     const handlePickChampion = async (championId: number) => {
+        if (!ensureConnected()) return;
         if (!champSelect) return;
 
         try {
@@ -621,7 +643,6 @@ export default function HomeScreen({ session }: { session: Session }) {
                             'PATCH',
                             { championId, completed: true }
                         );
-                        showAlert('Success', 'Champion selected', undefined, 'success');
                         return;
                     }
                 }
@@ -632,6 +653,7 @@ export default function HomeScreen({ session }: { session: Session }) {
     };
 
     const handleUpdateRoles = async (first: string, second: string) => {
+        if (!ensureConnected()) return;
         try {
             await lcuBridge.request('/lol-lobby/v2/lobby/members/localMember/position-preferences', 'PUT', {
                 firstPreference: first,
@@ -706,7 +728,7 @@ export default function HomeScreen({ session }: { session: Session }) {
                     onPick={handlePickChampion}
                     onBan={() => { }} // TODO: Implement ban
                     onError={(message) => showAlert('Error', message, undefined, 'error')}
-                    onSuccess={(message) => showAlert('Success', message, undefined, 'success')}
+                    onSuccess={undefined}
                 />
             );
         }
@@ -728,13 +750,8 @@ export default function HomeScreen({ session }: { session: Session }) {
         }
 
         if (gamePhase === 'Lobby') {
-            const handleLeaveAndCreate = async () => {
-                try {
-                    await handleLeaveLobby();
-                    setShowCreateLobby(true);
-                } catch (e) {
-                    console.error('Failed to leave lobby before creating new one', e);
-                }
+            const handleSwitchLobbyMode = () => {
+                setShowCreateLobby(true); // do not leave; switching modes should keep members
             };
             return (
                 <LobbyScreen
@@ -742,10 +759,10 @@ export default function HomeScreen({ session }: { session: Session }) {
                     onEnterQueue={handleEnterQueue}
                     onLeaveLobby={handleLeaveLobby}
                     onUpdateRoles={handleUpdateRoles}
-                    onOpenCreateLobby={handleLeaveAndCreate}
+                    onOpenCreateLobby={handleSwitchLobbyMode}
                     estimatedQueueTime={estimatedQueueTime}
                     onError={(message) => showAlert('Error', message, undefined, 'error')}
-                    onSuccess={(message) => showAlert('Success', message, undefined, 'success')}
+                    onSuccess={undefined}
                 />
             );
         }
@@ -772,7 +789,6 @@ export default function HomeScreen({ session }: { session: Session }) {
                 onClose={() => setShowCreateLobby(false)}
                 onSuccess={async () => {
                     setShowCreateLobby(false);
-                    showAlert('Success', 'Lobby created successfully', undefined, 'success');
                     // Force update game phase
                     try {
                         const result = await lcuBridge.request('/lol-gameflow/v1/session');
@@ -783,9 +799,7 @@ export default function HomeScreen({ session }: { session: Session }) {
                         console.log('Failed to force update phase', e);
                     }
                 }}
-                onError={(message) => {
-                    showAlert('Error', message, undefined, 'error');
-                }}
+                onError={undefined}
             />
 
             <CustomModal

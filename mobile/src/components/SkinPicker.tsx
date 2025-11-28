@@ -5,7 +5,7 @@ import { Button } from '@rneui/themed';
 interface Skin {
     id: number;
     name: string;
-    splashPath: string;
+    splashPath?: string | null;
     owned: boolean;
 }
 
@@ -15,16 +15,31 @@ interface SkinPickerProps {
     onClose: () => void;
     skins: Skin[];
     currentSkinId?: number;
+    championName?: string;
+    fallbackSplash?: string;
+    championIcon?: string;
 }
 
-export default function SkinPicker({ visible, onSelect, onClose, skins, currentSkinId }: SkinPickerProps) {
+const safeUri = (uri?: string | null) => {
+    if (!uri || typeof uri !== 'string' || uri.trim() === '') return null;
+    return uri;
+};
+
+export default function SkinPicker({ visible, onSelect, onClose, skins, currentSkinId, championName, fallbackSplash, championIcon }: SkinPickerProps) {
     return (
         <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
             <View style={styles.overlay}>
                 <View style={styles.container}>
-                    <Text style={styles.title}>Select Skin</Text>
+                    <View style={styles.headerRow}>
+                        {championIcon ? (
+                            <Image source={{ uri: championIcon }} style={styles.headerIcon} />
+                        ) : null}
+                        <Text style={styles.title}>{championName ? `Select Skin • ${championName}` : 'Select Skin'}</Text>
+                    </View>
                     <ScrollView contentContainerStyle={styles.list}>
-                        {skins.filter(s => s.owned).map((skin) => (
+                        {skins.map((skin) => {
+                            const uri = safeUri(skin.splashPath) || safeUri(fallbackSplash) || safeUri(championIcon);
+                            return (
                             <TouchableOpacity
                                 key={skin.id}
                                 style={[
@@ -33,12 +48,19 @@ export default function SkinPicker({ visible, onSelect, onClose, skins, currentS
                                 ]}
                                 onPress={() => onSelect(skin.id)}
                             >
-                                <Image source={{ uri: skin.splashPath }} style={styles.skinImage} />
+                                {uri ? (
+                                    <Image source={{ uri }} style={styles.skinImage} />
+                                ) : (
+                                    <View style={[styles.skinImage, styles.skinPlaceholder]}>
+                                        <Text style={styles.placeholderText}>Image unavailable</Text>
+                                    </View>
+                                )}
                                 <View style={styles.skinInfo}>
-                                    <Text style={styles.skinName}>{skin.name}</Text>
+                                    <Text style={styles.skinName} numberOfLines={1}>{skin.name}</Text>
                                 </View>
                             </TouchableOpacity>
-                        ))}
+                            );
+                        })}
                     </ScrollView>
                     <Button title="Cancel" onPress={onClose} buttonStyle={styles.cancelButton} />
                 </View>
@@ -61,12 +83,23 @@ const styles = StyleSheet.create({
         width: '90%',
         maxHeight: '80%',
     },
+    headerRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 12,
+        gap: 10,
+    },
     title: {
         color: 'white',
         fontSize: 20,
         fontWeight: 'bold',
-        marginBottom: 20,
-        textAlign: 'center',
+        flex: 1,
+    },
+    headerIcon: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        backgroundColor: '#111827',
     },
     list: {
         paddingBottom: 20,
@@ -87,18 +120,24 @@ const styles = StyleSheet.create({
         height: 150,
         resizeMode: 'cover',
     },
+    skinPlaceholder: {
+        backgroundColor: '#111827',
+    },
     skinInfo: {
         padding: 10,
         backgroundColor: 'rgba(0,0,0,0.7)',
         position: 'absolute',
         bottom: 0,
         width: '100%',
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     skinName: {
         color: 'white',
         fontSize: 14,
         fontWeight: 'bold',
         textAlign: 'center',
+        flex: 1,
     },
     cancelButton: {
         backgroundColor: '#757575',

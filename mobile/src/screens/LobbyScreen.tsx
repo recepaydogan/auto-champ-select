@@ -311,7 +311,7 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
     const sentInvites = (lobby?.invitations || []).filter((invite: any) => invite.toSummonerId !== localMember?.summonerId);
     const combinedInvites = [
         ...sentInvites,
-        ...localPendingInvites.filter(p => !sentInvites.some(i => i.toSummonerId === p.toSummonerId)),
+        ...localPendingInvites.filter((p: any) => !sentInvites.some((i: any) => i.toSummonerId === p.toSummonerId)),
     ];
     const pendingInvites = sentInvites.filter((i: any) => i.state === 'Pending').length;
     const acceptedInvites = sentInvites.filter((i: any) => i.state === 'Accepted').length;
@@ -397,15 +397,6 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
             </View>
 
             <ScrollView style={styles.content}>
-                <View style={styles.inviteButtonRow}>
-                    <Button
-                        title="Invite friends"
-                        onPress={() => setShowInviteModal(true)}
-                        buttonStyle={styles.primaryButton}
-                        containerStyle={{ width: '100%' }}
-                    />
-                </View>
-
                 {/* Quickplay Setup */}
                 {isQuickplay ? (
                     <QuickplaySetup 
@@ -524,15 +515,29 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
                         )}
                     </View>
                 )}
+
+                <View style={styles.inviteButtonRow}>
+                    <Button
+                        title="Invite friends"
+                        onPress={() => setShowInviteModal(true)}
+                        buttonStyle={styles.primaryButton}
+                        containerStyle={{ width: '100%' }}
+                    />
+                </View>
             </ScrollView>
 
             <View style={styles.footer}>
-                <Button
-                    title="Leave Lobby"
-                    onPress={onLeaveLobby}
-                    buttonStyle={styles.leaveButton}
-                    containerStyle={styles.buttonContainer}
-                />
+                {onOpenCreateLobby && (
+                    <Button
+                        title="Switch Lobby Mode"
+                        onPress={() => {
+                            if (onOpenCreateLobby) onOpenCreateLobby();
+                        }}
+                        buttonStyle={styles.secondaryButton}
+                        containerStyle={styles.buttonContainer}
+                        type="outline"
+                    />
+                )}
                 <Button
                     title="Find Match"
                     onPress={onEnterQueue}
@@ -540,18 +545,12 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
                     containerStyle={styles.buttonContainer}
                     disabled={!lobby?.canStartActivity}
                 />
-                {onOpenCreateLobby && (
-                    <Button
-                        title="Create New Lobby"
-                        onPress={() => {
-                            onLeaveLobby();
-                            onOpenCreateLobby();
-                        }}
-                        buttonStyle={styles.secondaryButton}
-                        containerStyle={styles.buttonContainer}
-                        type="outline"
-                    />
-                )}
+                <Button
+                    title="Leave Lobby"
+                    onPress={onLeaveLobby}
+                    buttonStyle={styles.leaveButton}
+                    containerStyle={styles.buttonContainer}
+                />
             </View>
 
             <RolePicker

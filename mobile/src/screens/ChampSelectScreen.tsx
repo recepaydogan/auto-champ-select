@@ -39,6 +39,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const [showSkinPicker, setShowSkinPicker] = useState(false);
     const [showRunePicker, setShowRunePicker] = useState(false);
     const [showRuneBuilder, setShowRuneBuilder] = useState(false);
+    const [editingPageId, setEditingPageId] = useState<number | null>(null);
     const [skins, setSkins] = useState<any[]>([]);
 
     // Rune builder states
@@ -48,7 +49,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const [keystoneId, setKeystoneId] = useState<number | null>(null);
     const [primaryPerks, setPrimaryPerks] = useState<{ [slot: number]: number | null }>({});
     const [secondaryPerks, setSecondaryPerks] = useState<number[]>([]);
-    const [statShards, setStatShards] = useState<number[]>([5008, 5008, 5002]);
+    const [statShards, setStatShards] = useState<number[]>([5008, 5010, 5011]);
 
     // Swap loading state - track which champion is being swapped
     const [swappingChampionId, setSwappingChampionId] = useState<number | null>(null);
@@ -61,6 +62,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const myTeam = champSelect?.myTeam || [];
     const theirTeam = champSelect?.theirTeam || [];
     const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
+    const hasPickedChampion = !!(localPlayer?.championId && localPlayer.championId > 0);
     const isARAM = champSelect?.benchEnabled;
     const currentAction = useMemo(() => {
         const actions = champSelect?.actions || [];
@@ -79,21 +81,22 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         }
     }, [currentAction?.type]);
 
+    const timerSyncRef = React.useRef<{ msLeft: number; syncedAt: number }>({ msLeft: 0, syncedAt: Date.now() });
+
     useEffect(() => {
         const ms = champSelect?.timer?.adjustedTimeLeftInPhase;
         if (typeof ms === 'number') {
+            timerSyncRef.current = { msLeft: ms, syncedAt: Date.now() };
             setTimeLeft(Math.max(0, Math.ceil(ms / 1000)));
         }
-        let interval: NodeJS.Timeout | null = null;
-        if (ms !== undefined) {
-            interval = setInterval(() => {
-                setTimeLeft(prev => Math.max(0, prev - 1));
-            }, 1000);
-        }
-        return () => {
-            if (interval) clearInterval(interval);
-        };
-    }, [champSelect?.timer?.adjustedTimeLeftInPhase]);
+        const interval = setInterval(() => {
+            const { msLeft, syncedAt } = timerSyncRef.current;
+            const elapsed = Date.now() - syncedAt;
+            const remainingMs = msLeft - elapsed;
+            setTimeLeft(Math.max(0, Math.ceil(remainingMs / 1000)));
+        }, 500);
+        return () => clearInterval(interval);
+    }, [champSelect?.timer?.adjustedTimeLeftInPhase, champSelect?.timer?.phase]);
 
     // Debug logging for bench data
     useEffect(() => {
@@ -104,6 +107,22 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             console.log('[ChampSelect] Bench Count:', champSelect.benchChampionIds?.length || 0);
         }
     }, [isARAM, champSelect?.benchChampionIds]);
+
+    const refreshRunes = useCallback(async () => {
+        try {
+            const pagesRes = await lcuBridge.request('/lol-perks/v1/pages');
+            let pages = Array.isArray(pagesRes?.content) ? pagesRes.content : [];
+
+            const currentRes = await lcuBridge.request('/lol-perks/v1/currentpage');
+            const currentId = currentRes?.status === 200 ? (currentRes.content?.id ?? currentRes.content) : null;
+            if (Array.isArray(pages) && currentId) {
+                pages = pages.map((p: any) => ({ ...p, isActive: p.id === currentId }));
+            }
+            setRunes(pages);
+        } catch (e) {
+            console.warn('[ChampSelect] Failed to refresh runes', e);
+        }
+    }, [lcuBridge]);
 
     useEffect(() => {
         loadData();
@@ -135,9 +154,8 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             champList.forEach((c: any) => map[c.id] = c);
             setChampionMap(map);
 
-            // 3. Fetch Runes
-            const runesResult = await lcuBridge.request('/lol-perks/v1/pages');
-            if (runesResult.status === 200) setRunes(runesResult.content);
+            // 3. Fetch Runes (and current page)
+            await refreshRunes();
 
             // 3a. Fetch rune icon map from CommunityDragon
             try {
@@ -145,9 +163,21 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 if (perksJson.ok) {
                     const perksData = await perksJson.json();
                     const perkMap: Record<number, string> = {};
+                    const normalizePathOnly = (path: string) => {
+                        const base = 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/';
+                        let cleaned = path.replace(/^\/+/, '');
+                        ['lol-game-data/assets/', 'assets/', 'plugins/rcp-be-lol-game-data/global/default/'].forEach(prefix => {
+                            if (cleaned.toLowerCase().startsWith(prefix.toLowerCase())) {
+                                cleaned = cleaned.substring(prefix.length);
+                            }
+                        });
+                        if (!cleaned.toLowerCase().startsWith('v1/')) cleaned = `v1/${cleaned}`;
+                        cleaned = cleaned.toLowerCase();
+                        return encodeURI(`${base}${cleaned}`);
+                    };
                     perksData.forEach((perk: any) => {
                         if (perk?.id && perk?.iconPath) {
-                            perkMap[perk.id] = perk.iconPath;
+                            perkMap[perk.id] = normalizePathOnly(perk.iconPath);
                         }
                     });
                     setRuneIconMap(perkMap);
@@ -155,8 +185,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                     if (samplePerk) {
                         console.log('[ChampSelect] Rune perks.json sample:', {
                             id: samplePerk.id,
-                            iconPath: samplePerk.iconPath,
-                            normalized: normalizeRuneIcon(perkMap[samplePerk.id] || samplePerk.iconPath, samplePerk.id),
+                            iconPath: perkMap[samplePerk.id],
                         });
                     }
                 } else {
@@ -165,23 +194,42 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             } catch (e) {
                 console.warn('[ChampSelect] Failed to load perks.json', e);
             }
+            let loadedStyles: any[] = [];
             const stylesResult = await lcuBridge.request('/lol-perks/v1/styles');
-            if (stylesResult.status === 200) {
-                setPerkStyles(stylesResult.content);
-                if (Array.isArray(stylesResult.content) && stylesResult.content.length > 0) {
-                    const firstStyle = stylesResult.content[0];
-                    const samplePerk = firstStyle?.slots?.[0]?.perks?.[0];
-                    const isPerkId = typeof samplePerk === 'number';
-                    console.log('[ChampSelect] Rune style sample:', {
-                        styleName: firstStyle?.name,
-                        samplePerk,
-                        isPerkId,
-                        slotStructure: firstStyle?.slots?.[0],
-                        normalized: isPerkId ? normalizeRuneIcon(runeIconMap[samplePerk] || undefined, samplePerk) : normalizeRuneIcon(samplePerk?.iconPath || samplePerk?.icon, samplePerk?.id),
-                    });
-                }
+            if (stylesResult.status === 200 && Array.isArray(stylesResult.content) && stylesResult.content.length > 0) {
+                loadedStyles = stylesResult.content;
             } else {
-                console.warn('[ChampSelect] Failed to load rune styles:', stylesResult.status);
+                console.warn('[ChampSelect] Failed to load rune styles from LCU:', stylesResult.status);
+            }
+
+            if (!loadedStyles.length) {
+                // Fallback to CommunityDragon perk styles so UI is not empty
+                try {
+                    const cdragonStylesRes = await fetch('https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/perkstyles.json');
+                    if (cdragonStylesRes.ok) {
+                        const cdragonStyles = await cdragonStylesRes.json();
+                        if (Array.isArray(cdragonStyles?.styles) && cdragonStyles.styles.length > 0) {
+                            loadedStyles = cdragonStyles.styles;
+                            console.log('[ChampSelect] Using CDragon perkstyles fallback');
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[ChampSelect] Failed to fetch perkstyles fallback', e);
+                }
+            }
+
+            setPerkStyles(loadedStyles);
+            if (Array.isArray(loadedStyles) && loadedStyles.length > 0) {
+                const firstStyle = loadedStyles[0];
+                const samplePerk = firstStyle?.slots?.[0]?.perks?.[0];
+                const isPerkId = typeof samplePerk === 'number';
+                console.log('[ChampSelect] Rune style sample:', {
+                    styleName: firstStyle?.name,
+                    samplePerk,
+                    isPerkId,
+                    slotStructure: firstStyle?.slots?.[0],
+                    normalized: isPerkId ? normalizeRuneIcon(runeIconMap[samplePerk] || undefined, samplePerk) : normalizeRuneIcon(samplePerk?.iconPath || samplePerk?.icon, samplePerk?.id),
+                });
             }
 
             // 4. Fetch Spells
@@ -224,8 +272,52 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         try {
             const skinsRes = await lcuBridge.request(`/lol-champions/v1/inventories/${localPlayer.summonerId}/skins-minimal`);
             if (skinsRes.status === 200) {
-                const champSkins = skinsRes.content.filter((s: any) => s.championId === championId);
-                setSkins(champSkins);
+                const champSkins = (skinsRes.content || []).filter((s: any) => s.championId === championId);
+                const champKey = championMap[championId]?.key;
+
+                const resolveSplash = (skin: any) => {
+                    const skinNum = skin.id % 1000;
+
+                    // 1) If LCU already gives a URL, use it
+                    if (skin.splashPath && typeof skin.splashPath === 'string' && skin.splashPath.startsWith('http')) {
+                        try { return encodeURI(skin.splashPath); } catch { return skin.splashPath; }
+                    }
+
+                    // 2) DDragon splash
+                    if (champKey) {
+                        return `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${champKey}_${skinNum}.jpg`;
+                    }
+
+                    // 3) DDragon loading fallback
+                    if (champKey) {
+                        return `https://ddragon.leagueoflegends.com/cdn/img/champion/loading/${champKey}_${skinNum}.jpg`;
+                    }
+
+                    return undefined;
+                };
+
+                let mapped = champSkins
+                    .filter((s: any) => s.ownership?.owned || s.isBase || s.owned) // only owned
+                    .map((s: any) => ({
+                        id: s.id,
+                        name: s.name || s.skinName || `Skin ${s.id % 1000}`,
+                        owned: true,
+                        splashPath: resolveSplash(s),
+                    }));
+
+                // If no owned skins were returned, fall back to base skin splash
+                if (mapped.length === 0 && champKey) {
+                    mapped = [{
+                        id: championId * 1000,
+                        name: `${champKey} (Base)`,
+                        owned: true,
+                        splashPath: `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${champKey}_0.jpg`,
+                    }];
+                }
+                if (__DEV__) {
+                    console.log('[ChampSelect] Skins mapped (owned only)', mapped.slice(0, 3));
+                }
+                setSkins(mapped);
             }
         } catch (error) {
             console.error('Failed to load skins:', error);
@@ -251,15 +343,58 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     }, [champSelect?.summonerSpells]);
 
     const filteredSpells = useMemo(() => {
-        // Remove duplicates by id and apply allowed filter if present
+        // Remove duplicates by id first
         const unique = spells.reduce((acc: Record<number, any>, spell) => {
             if (!acc[spell.id]) acc[spell.id] = spell;
             return acc;
         }, {});
-        const list = Object.values(unique) as any[];
-        if (!allowedSpellIds || allowedSpellIds.length === 0) return list;
-        return list.filter((s: any) => allowedSpellIds.includes(s.id));
-    }, [spells, allowedSpellIds]);
+        let list = Object.values(unique) as any[];
+
+        // If server provides explicit allowed list, trust it
+        if (allowedSpellIds && allowedSpellIds.length > 0) {
+            list = list.filter((s: any) => allowedSpellIds.includes(s.id));
+        } else {
+            // Otherwise apply simple mode-based rules
+            const mode = (champSelect?.gameMode || '').toUpperCase();
+            const mapId = champSelect?.mapId;
+            const containsBannedText = (s: any) => {
+                const name = (s.name || '').toLowerCase();
+                const key = (s.key || '').toLowerCase();
+                return name.includes('placeholder') || name.includes('poro') || name.includes('snowball') || key.includes('snowball') || key.includes('poro');
+            };
+
+            // Summoner's Rift defaults (includes Smite/TP, excludes ARAM-only)
+            const srAllowed = new Set([21, 3, 1, 4, 14, 7, 6, 12, 11]); // Barrier, Exhaust, Cleanse, Flash, Ignite, Heal, Ghost, Teleport, Smite
+            // ARAM (Howling Abyss map 12): exclude Smite/Teleport; allow Snowball/Clarity
+            if (mode === 'ARAM' || mapId === 12) {
+                const aramAllow = new Set([1, 3, 4, 6, 7, 13, 21, 32, 14]); // Cleanse, Exhaust, Flash, Ghost, Heal, Clarity, Barrier, Snowball, Ignite
+                list = list.filter((s: any) => aramAllow.has(s.id) && !containsBannedText(s));
+            } else {
+                // Summoner's Rift / default: only allow standard SR spells, no Snowball/Clarity/poro/placeholder/odd smite clones
+                list = list.filter((s: any) => srAllowed.has(s.id) && !containsBannedText(s));
+            }
+        }
+
+        return list;
+    }, [spells, allowedSpellIds, champSelect?.gameMode, champSelect?.mapId]);
+
+    const shardRows = useMemo(() => ([
+        [
+            { id: 5008, label: 'Adaptive Force', desc: '+9 Adaptive Force' },
+            { id: 5005, label: 'Attack Speed', desc: '+10% Attack Speed' },
+            { id: 5007, label: 'Ability Haste', desc: '+8 Ability Haste' },
+        ],
+        [
+            { id: 5008, label: 'Adaptive Force', desc: '+9 Adaptive Force' },
+            { id: 5010, label: 'Move Speed', desc: '+2.5% Move Speed' },
+            { id: 5001, label: 'Health Scaling', desc: '+10-180 Health (lvl based)' },
+        ],
+        [
+            { id: 5011, label: 'Health', desc: '+65 Health' },
+            { id: 5013, label: 'Tenacity', desc: '+15% Tenacity & Slow Resist' },
+            { id: 5001, label: 'Health Scaling', desc: '+10-180 Health (lvl based)' },
+        ],
+    ]), []);
 
     const perkSlotMap = useMemo(() => {
         const map: { [id: number]: { styleId: number; slot: number } } = {};
@@ -278,24 +413,12 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     }, [perkStyles]);
 
     const normalizeRuneIcon = (rawPath: string | undefined, id?: number) => {
-        const cdragonBase = 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/';
+        // Prefer the pre-normalized map entry if available
+        if (id && runeIconMap[id]) return runeIconMap[id];
 
-        // 1. Try to use the ID map first if available
-        if (id && runeIconMap[id]) {
-            const mappedPath = runeIconMap[id];
-            // Recursively normalize the mapped path (but don't pass ID again to avoid infinite loop if map points to self)
-            return normalizeRuneIcon(mappedPath);
-        }
+        if (!rawPath || rawPath.trim().length === 0) return '';
 
-        // 2. If no raw path and no map entry, try fallback by ID
-        if (!rawPath || rawPath.trim().length === 0) {
-            if (id) {
-                return `${cdragonBase}v1/perk-icons/${id}.png`;
-            }
-            return '';
-        }
-
-        // 3. If it's already a full URL, return it (encoded)
+        // Already a full URL
         if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
             try {
                 return encodeURI(rawPath);
@@ -304,29 +427,24 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             }
         }
 
-        // 4. Clean up the path
-        let cleaned = rawPath.replace(/^\/+/, ''); // Remove leading slashes
+        const cdragonBase = 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/';
 
-        // Remove common prefixes that might be in the LCU data
+        // Remove leading slashes and common prefixes
+        let cleaned = rawPath.replace(/^\/+/, '');
         const prefixesToRemove = [
             'lol-game-data/assets/',
             'assets/',
             'plugins/rcp-be-lol-game-data/global/default/'
         ];
-
         for (const prefix of prefixesToRemove) {
             if (cleaned.toLowerCase().startsWith(prefix.toLowerCase())) {
                 cleaned = cleaned.substring(prefix.length);
             }
         }
 
-        // 5. Ensure it starts with v1/ if it looks like a standard icon path
-        // Most perk icons are in v1/perk-icons/ or v1/perk-images/
-        if (!cleaned.startsWith('v1/')) {
-            cleaned = `v1/${cleaned}`;
-        }
+        if (!cleaned.toLowerCase().startsWith('v1/')) cleaned = `v1/${cleaned}`;
+        cleaned = cleaned.toLowerCase();
 
-        // 6. Construct final URL
         try {
             return encodeURI(`${cdragonBase}${cleaned}`);
         } catch (e) {
@@ -342,7 +460,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
 
     const getRuneIconUri = (perk: any) => {
         const perkId = typeof perk === 'number' ? perk : perk?.id;
-        const iconPath = (perk as any)?.iconPath || (perk as any)?.icon;
+        const iconPath = (perk as any)?.iconPath || (perk as any)?.icon || (perkId ? runeIconMap[perkId] : undefined);
         const uri = normalizeRuneIcon(iconPath, perkId);
         if (__DEV__ && (!uri || failedRuneImages.has(uri))) {
             console.warn('[RuneIcon] Missing/failing icon', { perkId, iconPath, uri });
@@ -350,7 +468,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         return uri;
     };
 
-    const initRuneBuilder = useCallback(() => {
+    const initRuneBuilder = useCallback((opts?: { preserveName?: boolean }) => {
         if (!perkStyles.length) return;
         const defaultPrimary = activeRunePage?.primaryStyleId || perkStyles[0].id;
         const fallbackSub = perkStyles.find((s: any) => s.id !== defaultPrimary)?.id || perkStyles[0].id;
@@ -358,7 +476,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         setPrimaryStyleId(defaultPrimary);
         setSubStyleId(defaultSub);
 
-        const defaultShards = activeRunePage?.selectedPerkIds?.slice(-3) || [5008, 5008, 5002];
+        const defaultShards = activeRunePage?.selectedPerkIds?.slice(-3) || [5008, 5010, 5011];
         setStatShards(defaultShards);
 
         const activePerks = activeRunePage?.selectedPerkIds || [];
@@ -395,30 +513,74 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             subStyle.slots?.[1]?.perks?.[0] ? getPerkId(subStyle.slots[1].perks[0]) : null,
             subStyle.slots?.[2]?.perks?.[0] ? getPerkId(subStyle.slots[2].perks[0]) : null
         ].filter((id): id is number => id !== null) : []));
-        setRunePageName(`My ${primaryStyle?.name || 'Rune'} Page`);
+
+        if (!opts?.preserveName) {
+            setRunePageName(activeRunePage?.name || `My ${primaryStyle?.name || 'Rune'} Page`);
+        }
     }, [activeRunePage, perkStyles, perkSlotMap, keystoneId]);
 
-    const openRuneBuilder = () => {
+    const getUniqueRuneName = useCallback(() => {
+        const existing = new Set((runes || []).map((r: any) => r?.name).filter(Boolean));
+        const base = 'Custom Page';
+        let i = 1;
+        let candidate = `${base} ${i}`;
+        while (existing.has(candidate)) {
+            i += 1;
+            candidate = `${base} ${i}`;
+        }
+        return candidate;
+    }, [runes]);
+
+    const openRuneBuilder = (opts?: { edit?: boolean; name?: string }) => {
         if (!perkStyles.length) {
             if (onError) onError('Runes are still loading, please wait a moment.');
             return;
         }
-        initRuneBuilder();
+        if (!runes.length) {
+            refreshRunes();
+        }
+        const editExisting = opts?.edit !== false && activeRunePage;
+        // Default: edit currently active page if present
+        setEditingPageId(editExisting ? activeRunePage.id : null);
+        if (editExisting && activeRunePage?.name) {
+            setRunePageName(activeRunePage.name);
+        } else {
+            setRunePageName(opts?.name || getUniqueRuneName());
+        }
+        if (__DEV__) {
+            console.log('[RuneBuilder] Opening with styles:', perkStyles.length, 'runes:', runes.length, 'iconMap:', Object.keys(runeIconMap || {}).length);
+        }
+        initRuneBuilder({ preserveName: true });
         setShowRuneBuilder(true);
+    };
+
+    const openNewRuneBuilder = () => {
+        openRuneBuilder({ edit: false, name: getUniqueRuneName() });
     };
 
     const toggleSecondaryPerk = (perkId: number, slot: number) => {
         const slotInfo = perkSlotMap[perkId] || { slot };
         const filtered = secondaryPerks.filter((id) => (perkSlotMap[id]?.slot ?? slot) !== slotInfo.slot);
         const already = secondaryPerks.includes(perkId);
-        const next = already ? filtered : [...filtered, perkId].slice(0, 2);
+        let next = already ? filtered : [...filtered, perkId];
+        // Keep only two selections total; keep the most recent two
+        if (next.length > 2) {
+            next = next.slice(next.length - 2);
+        }
         setSecondaryPerks(next);
     };
 
     const handleCreateRunePage = async () => {
-        if (!primaryStyleId || !subStyleId || !keystoneId || !primaryPerks[1] || !primaryPerks[2] || !primaryPerks[3] || secondaryPerks.length < 2) {
-            if (onError) onError('Please complete your rune selections.');
+        const sec = secondaryPerks.filter((id): id is number => typeof id === 'number');
+        let shards = (statShards || []).filter((id): id is number => typeof id === 'number');
+        const core = [keystoneId, primaryPerks[1], primaryPerks[2], primaryPerks[3]];
+        if (core.some((id) => !id) || sec.length < 2) {
+            if (onError) onError('Please select all primary and secondary runes.');
             return;
+        }
+        // Ensure we always have 3 shards (fill missing with defaults)
+        while (shards.length < 3) {
+            shards.push(5008);
         }
         const payload = {
             name: runePageName.trim() || 'Custom Page',
@@ -429,22 +591,32 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 primaryPerks[1],
                 primaryPerks[2],
                 primaryPerks[3],
-                secondaryPerks[0],
-                secondaryPerks[1],
-                ...(statShards || [5008, 5008, 5002]),
+                sec[0],
+                sec[1],
+                ...shards.slice(0, 3),
             ],
             current: true,
         };
         try {
-            const res = await lcuBridge.request('/lol-perks/v1/pages', 'POST', payload);
-            if (res.status >= 400) throw new Error(res.content?.message || 'Failed to create rune page');
-            const runesResult = await lcuBridge.request('/lol-perks/v1/pages');
-            if (runesResult.status === 200) setRunes(runesResult.content);
+            const endpoint = editingPageId ? `/lol-perks/v1/pages/${editingPageId}` : '/lol-perks/v1/pages';
+            const method = editingPageId ? 'PUT' : 'POST';
+            const res = await lcuBridge.request(endpoint, method as any, payload);
+            if (res.status >= 400) throw new Error(res.content?.message || 'Failed to save rune page');
+
+            // Activate the new/updated page in both client and our state
+            const newPageId = res?.content?.id ?? editingPageId;
+            if (newPageId) {
+                await lcuBridge.request('/lol-perks/v1/currentpage', 'PUT', newPageId);
+            }
+
+            await refreshRunes();
+
             setShowRuneBuilder(false);
-            if (onSuccess) onSuccess('Rune page created');
+            setEditingPageId(null);
         } catch (e: any) {
-            console.error('Failed to create rune page:', e);
-            if (onError) onError(e.message || 'Failed to create rune page');
+            console.error('Failed to create rune page:', e, { payload });
+            const msg = e?.message || 'Failed to create rune page';
+            if (onError) onError(msg);
         }
     };
 
@@ -471,6 +643,9 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const handleRunePageSelect = async (pageId: number) => {
         try {
             await lcuBridge.request('/lol-perks/v1/currentpage', 'PUT', pageId);
+            // Refresh pages so active selection is reflected in UI
+            const runesResult = await lcuBridge.request('/lol-perks/v1/pages');
+            if (runesResult.status === 200) setRunes(runesResult.content);
             setShowRunePicker(false);
         } catch (error) {
             console.error('Failed to select rune page:', error);
@@ -518,11 +693,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             if (result.status === 200 || result.status === 204) {
                 console.log(`[ChampSelect] Successfully swapped with ${championName}`);
 
-                // Show success message
-                if (onSuccess) {
-                    onSuccess(`Swapped to ${championName}`);
-                }
-
                 // Refresh champ select data after a short delay to allow server to update
                 setTimeout(async () => {
                     try {
@@ -556,6 +726,8 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     };
 
     const handleChampionSelect = (championId: number) => {
+        // Once picked on SR, prevent further clicks (ARAM swaps handled via bench)
+        if (!isARAM && hasPickedChampion && selectionMode === 'pick') return;
         setConfirmModal({ visible: true, championId, action: selectionMode });
     };
 
@@ -640,6 +812,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                                             champions={champions}
                                             onSelect={handleChampionSelect}
                                             version={ddragonVersion}
+                                            disabled={!isARAM && hasPickedChampion && selectionMode === 'pick'}
                                         />
                                     </View>
                                 </>
@@ -713,14 +886,30 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                                     {runes.find(r => r.isActive)?.name || 'Select Runes'}
                                 </Text>
                             </TouchableOpacity>
-                            <Button
-                                title="Create Custom Rune Page"
-                                type="outline"
-                                onPress={openRuneBuilder}
-                                buttonStyle={styles.secondaryButton}
-                                titleStyle={styles.secondaryButtonTitle}
-                                containerStyle={styles.secondaryButtonContainer}
-                            />
+                            <View style={styles.runeActionsRow}>
+                                <View style={{ flex: 1 }}>
+                                    <Text style={styles.currentRuneLabel}>Current Page</Text>
+                                    <Text style={styles.currentRuneName}>{runes.find(r => r.isActive)?.name || 'None selected'}</Text>
+                                </View>
+                                <View style={styles.runeActionButtons}>
+                                    <Button
+                                        title="Edit"
+                                        type="outline"
+                                        onPress={() => openRuneBuilder({ edit: true })}
+                                        buttonStyle={styles.secondaryButton}
+                                        titleStyle={styles.secondaryButtonTitle}
+                                        containerStyle={[styles.secondaryButtonContainer, { marginRight: 6 }]}
+                                    />
+                                    <Button
+                                        title="New Page"
+                                        type="solid"
+                                        onPress={openNewRuneBuilder}
+                                        buttonStyle={[styles.secondaryButton, { backgroundColor: '#4f46e5' }]}
+                                        titleStyle={styles.secondaryButtonTitle}
+                                        containerStyle={styles.secondaryButtonContainer}
+                                    />
+                                </View>
+                            </View>
 
                             <Text style={styles.sectionTitle}>Spells</Text>
                             <View style={styles.spellsContainer}>
@@ -829,6 +1018,17 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                     onClose={() => setShowSkinPicker(false)}
                     skins={skins}
                     currentSkinId={localPlayer?.selectedSkinId}
+                    championName={championMap[localPlayer?.championId || 0]?.name}
+                    fallbackSplash={
+                        championMap[localPlayer?.championId || 0]?.key
+                            ? `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${championMap[localPlayer?.championId || 0]?.key}_0.jpg`
+                            : undefined
+                    }
+                    championIcon={
+                        championMap[localPlayer?.championId || 0]?.key
+                            ? `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${championMap[localPlayer?.championId || 0]?.key}.png`
+                            : undefined
+                    }
                 />
                 <RunePicker
                     visible={showRunePicker}
@@ -881,12 +1081,12 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                     onRequestClose={() => setShowRuneBuilder(false)}
                 >
                     <View style={styles.modalOverlay}>
-                        <View style={[styles.modalCard, { maxHeight: '90%', width: '95%', padding: 0, overflow: 'hidden' }]}>
+                        <View style={[styles.modalCard, { maxHeight: '90%', width: '95%', padding: 0, overflow: 'hidden', flex: 1 }]}>
                             {/* Sticky Header */}
                             <View style={styles.runeBuilderHeader}>
                                 <View>
-                                    <Text style={styles.modalTitle}>Create Rune Page</Text>
-                                    <Text style={styles.modalSubtitle}>Customize your playstyle</Text>
+                                    <Text style={styles.modalTitle}>{editingPageId ? 'Edit Rune Page' : 'Create Rune Page'}</Text>
+                                    <Text style={styles.modalSubtitle}>{editingPageId ? 'Update your current setup' : 'Customize your playstyle'}</Text>
                                 </View>
                                 <View style={styles.headerActions}>
                                     <Button
@@ -896,7 +1096,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                                         titleStyle={{ color: '#9ca3af' }}
                                     />
                                     <Button
-                                        title="Save Page"
+                                        title={editingPageId ? 'Save Changes' : 'Create Page'}
                                         onPress={handleCreateRunePage}
                                         buttonStyle={styles.saveButton}
                                         icon={{ name: 'save', type: 'font-awesome', color: 'white', size: 14 }}
@@ -905,6 +1105,13 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                             </View>
 
                             <ScrollView style={styles.runeBuilderContent} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+                                {!perkStyles.length ? (
+                                    <View style={{ alignItems: 'center', paddingVertical: 30 }}>
+                                        <ActivityIndicator color="#4f46e5" />
+                                        <Text style={{ color: '#9ca3af', marginTop: 12 }}>Loading runes from LCU...</Text>
+                                    </View>
+                                ) : null}
+
                                 <TextInput
                                     value={runePageName}
                                     onChangeText={setRunePageName}
@@ -1048,91 +1255,87 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
 
                                     {subStyleId && (
                                         <View style={styles.secondaryContainer}>
-                                            {perkStyles.find((s: any) => s.id === subStyleId)?.slots
-                                                ?.filter((_: any, idx: number) => idx > 0)
-                                                .map((slot: any, idx: number) => (
-                                                    <View key={`secondary-slot-${idx}`} style={styles.slotContainer}>
-                                                        <View style={styles.perkRow}>
-                                                            {(slot.perks || []).filter(Boolean).map((perk: any, perkIdx: number) => {
-                                                                const perkId = typeof perk === 'number' ? perk : perk?.id;
-                                                                const perkName = typeof perk === 'number' ? `Perk ${perk}` : perk?.name || `Perk ${perkId}`;
-                                                                const iconUri = safeImageUri(getRuneIconUri(perk));
-                                                                const hasFailed = iconUri ? failedRuneImages.has(iconUri) : true;
-                                                                const isSelected = secondaryPerks.includes(perkId);
+                                            {(perkStyles.find((s: any) => s.id === subStyleId)?.slots || [])
+                                                .slice(1) // drop keystone slot
+                                                .slice(0, 3) // ensure three rows
+                                                .map((slot: any, slotIdx: number) => {
+                                                    const slotIndex = slotIdx + 1; // matches original slot numbering (1,2,3)
+                                                    return (
+                                                        <View key={`secondary-slot-${slotIndex}`} style={styles.slotContainer}>
+                                                            <View style={styles.perkRow}>
+                                                                {(slot.perks || []).filter(Boolean).map((perk: any, perkIdx: number) => {
+                                                                    const perkId = typeof perk === 'number' ? perk : perk?.id;
+                                                                    const iconUri = safeImageUri(getRuneIconUri(perk));
+                                                                    const hasFailed = iconUri ? failedRuneImages.has(iconUri) : true;
+                                                                    const isSelected = secondaryPerks.includes(perkId);
 
-                                                                return (
-                                                                    <TouchableOpacity
-                                                                        key={`secondary-${idx}-${perkId ?? `idx-${perkIdx}`}`}
-                                                                        style={[
-                                                                            styles.perkCard,
-                                                                            isSelected && styles.perkCardActive
-                                                                        ]}
-                                                                        onPress={() => toggleSecondaryPerk(perkId, idx + 1)}
-                                                                    >
-                                                                        {iconUri && !hasFailed ? (
-                                                                            <Image
-                                                                                source={{ uri: iconUri }}
-                                                                                style={[styles.perkIcon, !isSelected && { opacity: 0.4 }]}
-                                                                                onError={(e) => {
-                                                                                    if (__DEV__) console.warn('[RuneIcon] Failed to load secondary slot image:', iconUri, e.nativeEvent.error);
-                                                                                    setFailedRuneImages(prev => new Set(prev).add(iconUri));
-                                                                                }}
-                                                                            />
-                                                                        ) : (
-                                                                            <View style={[styles.perkIcon, styles.benchPlaceholder]} />
-                                                                        )}
-                                                                    </TouchableOpacity>
-                                                                );
-                                                            })}
+                                                                    return (
+                                                                        <TouchableOpacity
+                                                                            key={`secondary-${slotIndex}-${perkId ?? `idx-${perkIdx}`}`}
+                                                                            style={[
+                                                                                styles.perkCard,
+                                                                                isSelected && styles.perkCardActive
+                                                                            ]}
+                                                                            onPress={() => toggleSecondaryPerk(perkId, slotIndex)}
+                                                                        >
+                                                                            {iconUri && !hasFailed ? (
+                                                                                <Image
+                                                                                    source={{ uri: iconUri }}
+                                                                                    style={[styles.perkIcon, !isSelected && { opacity: 0.4 }]}
+                                                                                    onError={(e) => {
+                                                                                        if (__DEV__) console.warn('[RuneIcon] Failed to load secondary slot image:', iconUri, e.nativeEvent.error);
+                                                                                        setFailedRuneImages(prev => new Set(prev).add(iconUri));
+                                                                                    }}
+                                                                                />
+                                                                            ) : (
+                                                                                <View style={[styles.perkIcon, styles.benchPlaceholder]} />
+                                                                            )}
+                                                                        </TouchableOpacity>
+                                                                    );
+                                                                })}
+                                                            </View>
                                                         </View>
-                                                    </View>
-                                                ))}
+                                                    );
+                                                })}
                                         </View>
                                     )}
                                 </View>
 
                                 <View style={styles.runeSection}>
-                                    <Text style={styles.sectionLabel}>Stat Shards</Text>
+                                    <View style={styles.runeRowHeader}>
+                                        <Text style={styles.sectionLabel}>Stat Shards</Text>
+                                        <View style={styles.divider} />
+                                    </View>
                                     <View style={styles.shardContainer}>
-                                        <View style={styles.shardRow}>
-                                            {[5008, 5005, 5007].map((id) => (
-                                                <TouchableOpacity
-                                                    key={id}
-                                                    style={[styles.shardButton, statShards[0] === id && styles.shardButtonActive]}
-                                                    onPress={() => setStatShards([id, statShards[1], statShards[2]])}
-                                                >
-                                                    <Text style={[styles.shardText, statShards[0] === id && styles.shardTextActive]}>
-                                                        {id === 5008 ? 'Adaptive' : id === 5005 ? 'Atk Spd' : 'Haste'}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            ))}
-                                        </View>
-                                        <View style={styles.shardRow}>
-                                            {[5008, 5002, 5003].map((id) => (
-                                                <TouchableOpacity
-                                                    key={id}
-                                                    style={[styles.shardButton, statShards[1] === id && styles.shardButtonActive]}
-                                                    onPress={() => setStatShards([statShards[0], id, statShards[2]])}
-                                                >
-                                                    <Text style={[styles.shardText, statShards[1] === id && styles.shardTextActive]}>
-                                                        {id === 5008 ? 'Adaptive' : id === 5002 ? 'Armor' : 'MR'}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            ))}
-                                        </View>
-                                        <View style={styles.shardRow}>
-                                            {[5001, 5002, 5003].map((id) => (
-                                                <TouchableOpacity
-                                                    key={id}
-                                                    style={[styles.shardButton, statShards[2] === id && styles.shardButtonActive]}
-                                                    onPress={() => setStatShards([statShards[0], statShards[1], id])}
-                                                >
-                                                    <Text style={[styles.shardText, statShards[2] === id && styles.shardTextActive]}>
-                                                        {id === 5001 ? 'Health' : id === 5002 ? 'Armor' : 'MR'}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            ))}
-                                        </View>
+                                        {shardRows.map((row, idx) => (
+                                            <View key={`shard-row-${idx}`} style={styles.shardRow}>
+                                                {row.map((opt) => {
+                                                    const selected = statShards[idx] === opt.id;
+                                                    return (
+                                                        <TouchableOpacity
+                                                            key={`shard-${idx}-${opt.id}`}
+                                                            style={[styles.shardButton, selected && styles.shardButtonActive]}
+                                                            onPress={() => {
+                                                                const next = [...statShards];
+                                                                next[idx] = opt.id;
+                                                                setStatShards(next as number[]);
+                                                            }}
+                                                        >
+                                                            {safeImageUri(getRuneIconUri(opt.id)) ? (
+                                                                <Image
+                                                                    source={{ uri: getRuneIconUri(opt.id)! }}
+                                                                    style={[styles.shardIcon, !selected && { opacity: 0.45 }]}
+                                                                />
+                                                            ) : null}
+                                                            <Text style={[styles.shardText, selected && styles.shardTextActive]}>
+                                                                {opt.label}
+                                                            </Text>
+                                                            <Text style={styles.shardSubText}>{opt.desc}</Text>
+                                                        </TouchableOpacity>
+                                                    );
+                                                })}
+                                            </View>
+                                        ))}
                                     </View>
                                 </View>
                             </ScrollView>
@@ -1302,6 +1505,27 @@ const styles = StyleSheet.create({
     selectorButtonText: {
         color: 'white',
         fontSize: 16,
+    },
+    runeActionsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 12,
+        marginHorizontal: 20,
+    },
+    runeActionButtons: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    currentRuneLabel: {
+        color: '#9ca3af',
+        fontSize: 12,
+    },
+    currentRuneName: {
+        color: '#e5e7eb',
+        fontSize: 14,
+        fontWeight: '700',
+        marginTop: 2,
     },
     spellButton: {
         width: 60,
@@ -1541,6 +1765,11 @@ const styles = StyleSheet.create({
     shardButtonContainer: {
         minWidth: 110,
     },
+    shardIcon: {
+        width: 28,
+        height: 28,
+        marginBottom: 6,
+    },
     // New Rune Builder Styles
     runeBuilderHeader: {
         flexDirection: 'row',
@@ -1624,7 +1853,7 @@ const styles = StyleSheet.create({
     },
     shardContainer: {
         flexDirection: 'column',
-        gap: 8,
+        gap: 12,
     },
     shardButton: {
         flex: 1,
@@ -1644,10 +1873,18 @@ const styles = StyleSheet.create({
     shardText: {
         color: '#9ca3af',
         fontSize: 12,
+        textAlign: 'center',
+        fontWeight: '600',
     },
     shardTextActive: {
         color: '#ffffff',
         fontWeight: '600',
+    },
+    shardSubText: {
+        color: '#6b7280',
+        fontSize: 10,
+        marginTop: 2,
+        textAlign: 'center',
     },
     slotContainer: {
         marginBottom: 12,
