@@ -14,6 +14,14 @@ import Dashboard from './Dashboard';
 import LobbyScreen from './LobbyScreen';
 import QueueScreen from './QueueScreen';
 import ChampSelectScreen from './ChampSelectScreen';
+import {
+    defaultFavoriteConfig,
+    FavoriteChampionConfig,
+    Lane,
+    loadFavoriteChampionConfig,
+    normalizeLane,
+    saveFavoriteChampionConfig
+} from '../lib/favoriteChampions';
 
 export default function HomeScreen({ session }: { session: Session }) {
     const [connectionState, setConnectionState] = useState<RiftSocketStateValue>(RiftSocketState.DISCONNECTED);
@@ -29,6 +37,8 @@ export default function HomeScreen({ session }: { session: Session }) {
     const [timeInQueue, setTimeInQueue] = useState(0);
     const [estimatedQueueTime, setEstimatedQueueTime] = useState<number | null>(null);
     const [queuePenaltySeconds, setQueuePenaltySeconds] = useState<number>(0);
+    const [favoriteConfig, setFavoriteConfig] = useState<FavoriteChampionConfig>({ ...defaultFavoriteConfig });
+    const [favoritesLoaded, setFavoritesLoaded] = useState(false);
 
     // Custom modal state
     const [modalVisible, setModalVisible] = useState(false);
@@ -55,6 +65,7 @@ export default function HomeScreen({ session }: { session: Session }) {
     const queueTimerRef = useRef<NodeJS.Timeout | null>(null);
     const queueStartRef = useRef<number | null>(null);
     const lastQueueSeenRef = useRef<number | null>(null);
+    const autoPickStateRef = useRef<{ lastActionId?: number; lastAppliedChampionId?: number; manualOverride?: boolean }>({});
 
     const lcuBridge = getLCUBridge();
     const ensureConnected = useCallback(() => {
@@ -114,6 +125,21 @@ export default function HomeScreen({ session }: { session: Session }) {
         autoAcceptRef.current = autoAccept;
     }, [autoAccept]);
 
+    useEffect(() => {
+        let mounted = true;
+        const loadFavorites = async () => {
+            const config = await loadFavoriteChampionConfig();
+            if (mounted) {
+                setFavoriteConfig(config);
+                setFavoritesLoaded(true);
+            }
+        };
+        loadFavorites().catch((error) => console.warn('[HomeScreen] Failed to load favorites', error));
+        return () => {
+            mounted = false;
+        };
+    }, []);
+
     // If connected but LCU goes down, reset lobby/phase and close creation
     useEffect(() => {
         if (connected && !desktopStatus.lcuConnected) {
@@ -164,6 +190,11 @@ export default function HomeScreen({ session }: { session: Session }) {
             setCheckingStatus(false);
         }
     }, [session?.user?.id]);
+
+    const persistFavoriteConfig = useCallback(async (config: FavoriteChampionConfig) => {
+        setFavoriteConfig(config);
+        await saveFavoriteChampionConfig(config);
+    }, []);
 
     // Set up callbacks once on mount
     useEffect(() => {
@@ -572,6 +603,17 @@ export default function HomeScreen({ session }: { session: Session }) {
         };
     }, [connected, gamePhase]);
 
+    useEffect(() => {
+        if (gamePhase !== 'ChampSelect') {
+            autoPickStateRef.current = {};
+        }
+    }, [gamePhase]);
+
+    useEffect(() => {
+        if (!connected || gamePhase !== 'ChampSelect') return;
+        autoApplyFavoriteChampion(champSelect);
+    }, [connected, gamePhase, champSelect, autoApplyFavoriteChampion]);
+
     const handleEnterQueue = async () => {
         if (!ensureConnected()) return;
         try {
@@ -663,6 +705,122 @@ export default function HomeScreen({ session }: { session: Session }) {
             showAlert('Error', error.message || 'Failed to update roles', undefined, 'error');
         }
     };
+
+    const resolvePreferredLane = useCallback((cs: any): Lane => {
+        const localPlayerCellId = cs?.localPlayerCellId;
+        const myTeam = cs?.myTeam || [];
+        const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
+        const laneFromChampSelect = normalizeLane(
+            localPlayer?.assignedPosition ||
+            localPlayer?.selectedPosition ||
+            localPlayer?.role ||
+            localPlayer?.position
+        );
+        const primaryLobbyLane = normalizeLane(lobby?.localMember?.firstPositionPreference);
+        const secondaryLobbyLane = normalizeLane(lobby?.localMember?.secondPositionPreference);
+
+        if (laneFromChampSelect && laneFromChampSelect !== 'FILL') return laneFromChampSelect;
+        if (primaryLobbyLane && primaryLobbyLane !== 'FILL') return primaryLobbyLane as Lane;
+        if (secondaryLobbyLane && secondaryLobbyLane !== 'FILL') return secondaryLobbyLane as Lane;
+        return 'FILL';
+    }, [lobby?.localMember?.firstPositionPreference, lobby?.localMember?.secondPositionPreference]);
+
+    const autoApplyFavoriteChampion = useCallback(async (cs: any) => {
+        if (!cs) return;
+        if (!favoriteConfig.autoHover && !favoriteConfig.autoLock) return;
+        if (!favoritesLoaded) return;
+        if (!ensureConnected()) return;
+
+        const localPlayerCellId = cs.localPlayerCellId;
+        const myTeam = cs.myTeam || [];
+        const theirTeam = cs.theirTeam || [];
+        const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
+        if (!localPlayer) return;
+
+        const lane = resolvePreferredLane(cs);
+        const lanePrefs = favoriteConfig.preferences?.[lane] || [];
+        const fillPrefs = favoriteConfig.allowFillFallback && lane !== 'FILL'
+            ? (favoriteConfig.preferences?.FILL || [])
+            : [];
+        const candidates = [...lanePrefs, ...fillPrefs].filter((id, idx, arr) => id > 0 && arr.indexOf(id) === idx);
+        if (!candidates.length) return;
+
+        const banned = new Set<number>();
+        const addIfValid = (id?: number) => {
+            if (typeof id === 'number' && id > 0) banned.add(id);
+        };
+        (cs.bans?.myTeamBans || []).forEach(addIfValid);
+        (cs.bans?.theirTeamBans || []).forEach(addIfValid);
+        (cs.actions || []).forEach((turn: any[]) => {
+            turn.forEach((action: any) => {
+                if (
+                    action?.completed &&
+                    typeof action.championId === 'number' &&
+                    action.championId > 0 &&
+                    (action.type || '').toLowerCase() === 'ban'
+                ) {
+                    banned.add(action.championId);
+                }
+            });
+        });
+
+        const picked = new Set<number>();
+        [...myTeam, ...theirTeam].forEach((member: any) => {
+            if (typeof member?.championId === 'number' && member.championId > 0) {
+                picked.add(member.championId);
+            }
+        });
+
+        const blocked = new Set<number>([...banned, ...picked]);
+        const choice = candidates.find((id) => !blocked.has(id));
+        if (!choice) return;
+
+        const actions = cs.actions || [];
+        let currentAction: any = null;
+        for (const turn of actions) {
+            for (const action of turn) {
+                if (action.actorCellId === localPlayerCellId && !action.completed) {
+                    currentAction = action;
+                    break;
+                }
+            }
+            if (currentAction) break;
+        }
+        if (!currentAction) return;
+
+        const actionType = (currentAction.type || '').toLowerCase();
+        if (actionType === 'ban') {
+            return; // do not auto-ban yet
+        }
+
+        const state = autoPickStateRef.current;
+        if (state.lastActionId !== currentAction.id) {
+            state.lastActionId = currentAction.id;
+            state.manualOverride = false;
+            state.lastAppliedChampionId = undefined;
+        }
+
+        if (currentAction.championId && currentAction.championId !== state.lastAppliedChampionId) {
+            state.manualOverride = true; // user picked something else
+        }
+        if (state.manualOverride) return;
+
+        const alreadyOnChoice = currentAction.championId === choice;
+        const shouldLock = favoriteConfig.autoLock && currentAction.isInProgress && (!actionType || actionType === 'pick');
+        if (alreadyOnChoice && (!shouldLock || currentAction.completed)) {
+            state.lastAppliedChampionId = choice;
+            return;
+        }
+
+        try {
+            const payload: any = { championId: choice };
+            if (shouldLock) payload.completed = true;
+            await lcuBridge.request(`/lol-champ-select/v1/session/actions/${currentAction.id}`, 'PATCH', payload);
+            state.lastAppliedChampionId = choice;
+        } catch (error: any) {
+            console.warn('[HomeScreen] Auto-favorite apply failed', error?.message || error);
+        }
+    }, [ensureConnected, favoriteConfig, favoritesLoaded, lcuBridge, resolvePreferredLane]);
 
     // Build connection status for display
     const connectionStatus: ConnectionStatusState = {
@@ -761,6 +919,9 @@ export default function HomeScreen({ session }: { session: Session }) {
                     onUpdateRoles={handleUpdateRoles}
                     onOpenCreateLobby={handleSwitchLobbyMode}
                     estimatedQueueTime={estimatedQueueTime}
+                    favoriteConfig={favoriteConfig}
+                    onSaveFavoriteConfig={persistFavoriteConfig}
+                    favoritesLoaded={favoritesLoaded}
                     onError={(message) => showAlert('Error', message, undefined, 'error')}
                     onSuccess={undefined}
                 />

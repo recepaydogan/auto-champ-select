@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TextInput } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TextInput, Switch } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '@rneui/themed';
 import RolePicker from '../components/RolePicker';
 import QuickplaySetup from '../components/QuickplaySetup';
 import { getLCUBridge } from '../lib/lcuBridge';
+import ChampionGrid from '../components/ChampionGrid';
+import { FavoriteChampionConfig, Lane, lanes, updateLanePreference } from '../lib/favoriteChampions';
 
 interface LobbyScreenProps {
     lobby: any;
@@ -13,11 +15,26 @@ interface LobbyScreenProps {
     onUpdateRoles: (first: string, second: string) => void;
     onOpenCreateLobby?: () => void;
     estimatedQueueTime?: number | null;
+    favoriteConfig: FavoriteChampionConfig;
+    onSaveFavoriteConfig: (config: FavoriteChampionConfig) => void;
+    favoritesLoaded?: boolean;
     onError?: (message: string) => void;
     onSuccess?: (message: string) => void;
 }
 
-export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdateRoles, onOpenCreateLobby, estimatedQueueTime, onError, onSuccess }: LobbyScreenProps) {
+export default function LobbyScreen({
+    lobby,
+    onEnterQueue,
+    onLeaveLobby,
+    onUpdateRoles,
+    onOpenCreateLobby,
+    estimatedQueueTime,
+    favoriteConfig,
+    onSaveFavoriteConfig,
+    favoritesLoaded,
+    onError,
+    onSuccess
+}: LobbyScreenProps) {
     const [showRolePicker, setShowRolePicker] = useState(false);
     const [pickingFirstRole, setPickingFirstRole] = useState(true);
     const [memberNames, setMemberNames] = useState<{ [summonerId: number]: string }>({});
@@ -32,6 +49,13 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
     const fetchedIdsRef = useRef<Set<number>>(new Set());
     const [localPendingInvites, setLocalPendingInvites] = useState<any[]>([]);
     const cachedFriendsRef = useRef<any[]>([]);
+    const [editingFavorites, setEditingFavorites] = useState<FavoriteChampionConfig>(favoriteConfig);
+    const [ddragonVersion, setDdragonVersion] = useState('14.23.1');
+    const [champions, setChampions] = useState<any[]>([]);
+    const [championMap, setChampionMap] = useState<{ [key: number]: any }>({});
+    const [loadingChamps, setLoadingChamps] = useState(false);
+    const [activeLane, setActiveLane] = useState<Lane | null>(null);
+    const [showFavoriteGrid, setShowFavoriteGrid] = useState(false);
 
     const lcuBridge = getLCUBridge();
     const localMember = lobby?.members?.find((m: any) => m.puuid === lobby?.localMember?.puuid) || lobby?.localMember;
@@ -61,6 +85,41 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
 
         fetchQueueInfo();
     }, [lobby?.gameConfig?.queueId]);
+
+    useEffect(() => {
+        setEditingFavorites(favoriteConfig);
+    }, [favoriteConfig]);
+
+    useEffect(() => {
+        const loadChamps = async () => {
+            try {
+                setLoadingChamps(true);
+                const versionRes = await fetch('https://ddragon.leagueoflegends.com/api/versions.json');
+                const versions = await versionRes.json();
+                const version = versions?.[0] || '14.23.1';
+                setDdragonVersion(version);
+
+                const champsRes = await fetch(`https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/champion.json`);
+                const champsData = await champsRes.json();
+                const champList = Object.values(champsData.data).map((c: any) => ({
+                    id: parseInt(c.key),
+                    key: c.id,
+                    name: c.name,
+                    image: c.image
+                })).sort((a: any, b: any) => a.name.localeCompare(b.name));
+                setChampions(champList);
+                const map: { [key: number]: any } = {};
+                champList.forEach((c: any) => { map[c.id] = c; });
+                setChampionMap(map);
+            } catch (error) {
+                console.warn('[LobbyScreen] Failed to load champions for favorites', error);
+            } finally {
+                setLoadingChamps(false);
+            }
+        };
+
+        loadChamps();
+    }, []);
     
     // Fetch summoner names for all members
     useEffect(() => {
@@ -261,6 +320,49 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
         return 'Lobby';
     };
 
+    const laneLabel = (lane: Lane) => {
+        switch (lane) {
+            case 'TOP':
+                return 'Top';
+            case 'JUNGLE':
+                return 'Jungle';
+            case 'MIDDLE':
+                return 'Mid';
+            case 'BOTTOM':
+                return 'Bot';
+            case 'UTILITY':
+                return 'Support';
+            default:
+                return 'Fill';
+        }
+    };
+
+    const updateFavoriteToggle = (key: 'autoHover' | 'autoLock' | 'allowFillFallback', value: boolean) => {
+        const updated = { ...editingFavorites, [key]: value };
+        setEditingFavorites(updated);
+        onSaveFavoriteConfig(updated);
+    };
+
+    const openFavoritesForLane = (lane: Lane) => {
+        setActiveLane(lane);
+        setShowFavoriteGrid(true);
+    };
+
+    const handleFavoriteSelect = (championId: number) => {
+        if (!activeLane) return;
+        const updated = updateLanePreference(editingFavorites, activeLane, championId);
+        setEditingFavorites(updated);
+        onSaveFavoriteConfig(updated);
+    };
+
+    const handleRemoveFavorite = (lane: Lane, championId: number) => {
+        const preferences = { ...editingFavorites.preferences };
+        preferences[lane] = (preferences[lane] || []).filter((id) => id !== championId);
+        const updated = { ...editingFavorites, preferences };
+        setEditingFavorites(updated);
+        onSaveFavoriteConfig(updated);
+    };
+
     const sendInvite = async (toSummonerId: number) => {
         if (!toSummonerId || !lcuBridge.getIsConnected()) {
             if (onError) onError('Not connected to desktop client');
@@ -397,6 +499,105 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
             </View>
 
             <ScrollView style={styles.content}>
+                <View style={styles.favoritesCard}>
+                    <View style={styles.favoritesHeader}>
+                        <Text style={styles.cardTitle}>Favorite champions</Text>
+                        <Text style={styles.cardSubtitle}>
+                            Pick per-lane priorities. We will hover them when champ select starts and optionally lock when it's your turn.
+                        </Text>
+                        <Text style={styles.cardStatus}>{favoritesLoaded ? 'Synced for this device' : 'Loading saved picks...'}</Text>
+                    </View>
+                    <View style={styles.favoritesToggles}>
+                        <View style={styles.toggleRow}>
+                            <View style={styles.toggleTextContainer}>
+                                <Text style={styles.toggleLabel}>Auto hover favorites</Text>
+                                <Text style={styles.toggleSub}>Pre-select your top choice instantly so your team sees your plan.</Text>
+                            </View>
+                            <Switch
+                                value={editingFavorites.autoHover}
+                                onValueChange={(val) => updateFavoriteToggle('autoHover', val)}
+                                trackColor={{ false: '#404040', true: '#22c55e' }}
+                                thumbColor="#ffffff"
+                            />
+                        </View>
+                        <View style={styles.toggleRow}>
+                            <View style={styles.toggleTextContainer}>
+                                <Text style={styles.toggleLabel}>Auto lock on my turn</Text>
+                                <Text style={styles.toggleSub}>Lock your hovered champ the moment your pick action starts.</Text>
+                            </View>
+                            <Switch
+                                value={editingFavorites.autoLock}
+                                onValueChange={(val) => updateFavoriteToggle('autoLock', val)}
+                                trackColor={{ false: '#404040', true: '#4f46e5' }}
+                                thumbColor="#ffffff"
+                            />
+                        </View>
+                        <View style={styles.toggleRow}>
+                            <View style={styles.toggleTextContainer}>
+                                <Text style={styles.toggleLabel}>Fallback to Fill list</Text>
+                                <Text style={styles.toggleSub}>If lane picks are banned or taken, try your Fill picks next.</Text>
+                            </View>
+                            <Switch
+                                value={editingFavorites.allowFillFallback}
+                                onValueChange={(val) => updateFavoriteToggle('allowFillFallback', val)}
+                                trackColor={{ false: '#404040', true: '#22c55e' }}
+                                thumbColor="#ffffff"
+                            />
+                        </View>
+                    </View>
+                    <View style={styles.laneGrid}>
+                        {lanes.map((lane) => {
+                            const lanePrefs = editingFavorites.preferences?.[lane] || [];
+                            return (
+                                <View key={lane} style={styles.laneCard}>
+                                    <View style={styles.laneHeader}>
+                                        <View>
+                                            <Text style={styles.laneLabel}>{laneLabel(lane)}</Text>
+                                            <Text style={styles.laneSubLabel}>Top 3 choices</Text>
+                                        </View>
+                                        <Button
+                                            title={lanePrefs.length ? 'Edit' : 'Add'}
+                                            type="outline"
+                                            buttonStyle={styles.laneEditButton}
+                                            titleStyle={styles.laneEditTitle}
+                                            onPress={() => openFavoritesForLane(lane)}
+                                        />
+                                    </View>
+                                    <View style={styles.favoriteRow}>
+                                        {lanePrefs.length === 0 ? (
+                                            <Text style={styles.emptyFavoriteText}>No champions yet</Text>
+                                        ) : (
+                                            lanePrefs.map((id) => {
+                                                const champ = championMap[id];
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={`${lane}-${id}`}
+                                                        style={styles.favoritePill}
+                                                        onPress={() => handleRemoveFavorite(lane, id)}
+                                                    >
+                                                        {champ?.image?.full ? (
+                                                            <Image
+                                                                source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champ.image.full}` }}
+                                                                style={styles.favoriteImage}
+                                                            />
+                                                        ) : (
+                                                            <View style={[styles.favoriteImage, styles.favoriteImagePlaceholder]} />
+                                                        )}
+                                                        <Text style={styles.favoriteName} numberOfLines={1}>
+                                                            {champ?.name || `#${id}`}
+                                                        </Text>
+                                                        <Text style={styles.removeHint}>x</Text>
+                                                    </TouchableOpacity>
+                                                );
+                                            })
+                                        )}
+                                    </View>
+                                </View>
+                            );
+                        })}
+                    </View>
+                </View>
+
                 {/* Quickplay Setup */}
                 {isQuickplay ? (
                     <QuickplaySetup 
@@ -560,6 +761,41 @@ export default function LobbyScreen({ lobby, onEnterQueue, onLeaveLobby, onUpdat
                 currentRole={pickingFirstRole ? localMember?.firstPositionPreference : localMember?.secondPositionPreference}
             />
             <Modal
+                visible={showFavoriteGrid}
+                animationType="slide"
+                transparent
+                onRequestClose={() => setShowFavoriteGrid(false)}
+            >
+                <View style={styles.modalRoot} pointerEvents="box-none">
+                    <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowFavoriteGrid(false)} />
+                    <View style={[styles.modalCard, styles.favoritesModalCard]}>
+                        <View style={styles.modalHeader}>
+                            <Text style={styles.modalTitle}>
+                                {activeLane ? `Select favorites • ${laneLabel(activeLane)}` : 'Select favorites'}
+                            </Text>
+                            <Button
+                                title="Done"
+                                type="clear"
+                                titleStyle={styles.modalClose}
+                                onPress={() => setShowFavoriteGrid(false)}
+                            />
+                        </View>
+                        {loadingChamps ? (
+                            <View style={styles.modalLoading}>
+                                <ActivityIndicator size="large" color="#4f46e5" />
+                                <Text style={styles.modalLoadingText}>Loading champions...</Text>
+                            </View>
+                        ) : (
+                            <ChampionGrid
+                                champions={champions}
+                                onSelect={handleFavoriteSelect}
+                                version={ddragonVersion}
+                            />
+                        )}
+                    </View>
+                </View>
+            </Modal>
+            <Modal
                 visible={showInviteModal}
                 animationType="slide"
                 transparent
@@ -717,6 +953,132 @@ const styles = StyleSheet.create({
     content: {
         flex: 1,
     },
+    favoritesCard: {
+        backgroundColor: '#111111',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#1f1f1f',
+        padding: 16,
+        marginBottom: 16,
+    },
+    favoritesHeader: {
+        gap: 6,
+        marginBottom: 12,
+    },
+    cardTitle: {
+        color: '#ffffff',
+        fontSize: 18,
+        fontWeight: '700',
+    },
+    cardSubtitle: {
+        color: '#9ca3af',
+        fontSize: 13,
+        lineHeight: 18,
+    },
+    cardStatus: {
+        color: '#22c55e',
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    favoritesToggles: {
+        gap: 12,
+        marginBottom: 12,
+    },
+    toggleRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: 12,
+    },
+    toggleTextContainer: {
+        flex: 1,
+        gap: 2,
+    },
+    toggleLabel: {
+        color: '#e5e7eb',
+        fontSize: 14,
+        fontWeight: '600',
+    },
+    toggleSub: {
+        color: '#9ca3af',
+        fontSize: 12,
+    },
+    laneGrid: {
+        gap: 10,
+    },
+    laneCard: {
+        borderWidth: 1,
+        borderColor: '#1f1f1f',
+        borderRadius: 10,
+        padding: 12,
+        backgroundColor: '#0d0d0d',
+    },
+    laneHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    laneLabel: {
+        color: '#ffffff',
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    laneSubLabel: {
+        color: '#9ca3af',
+        fontSize: 11,
+        textTransform: 'uppercase',
+        letterSpacing: 0.8,
+    },
+    laneEditButton: {
+        borderColor: '#4f46e5',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 8,
+    },
+    laneEditTitle: {
+        color: '#e5e7eb',
+        fontSize: 12,
+    },
+    favoriteRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    favoritePill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        backgroundColor: '#1a1a1a',
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: '#262626',
+    },
+    favoriteImage: {
+        width: 32,
+        height: 32,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: '#2f2f2f',
+    },
+    favoriteImagePlaceholder: {
+        backgroundColor: '#1f2937',
+    },
+    favoriteName: {
+        color: '#e5e7eb',
+        maxWidth: 120,
+    },
+    removeHint: {
+        color: '#9ca3af',
+        fontSize: 12,
+        marginLeft: 4,
+    },
+    emptyFavoriteText: {
+        color: '#6b7280',
+        fontSize: 12,
+    },
     inviteButtonRow: {
         marginBottom: 16,
     },
@@ -747,6 +1109,10 @@ const styles = StyleSheet.create({
         width: '100%',
         maxHeight: '80%',
         padding: 16,
+    },
+    favoritesModalCard: {
+        maxHeight: '85%',
+        paddingBottom: 8,
     },
     modalHeader: {
         flexDirection: 'row',

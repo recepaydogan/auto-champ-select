@@ -22,6 +22,7 @@ export class LCUBridge {
   private observers: Map<string, (result: LCUResult) => void> = new Map();
   private statusCallback: ((status: DesktopStatus) => void) | null = null;
   private disconnectCallback: ((reason: string) => void) | null = null;
+  private connectionListeners: Set<(connected: boolean) => void> = new Set();
   private isConnected = false;
   private desktopStatus: DesktopStatus = {
     riftConnected: false,
@@ -35,7 +36,7 @@ export class LCUBridge {
   async connect(userId: string, riftUrl: string): Promise<void> {
     return new Promise((resolve, reject) => {
       let resolved = false;
-      
+
       const handleReject = (errorMessage: string) => {
         if (!resolved) {
           resolved = true;
@@ -60,6 +61,7 @@ export class LCUBridge {
       this.socket.onopen = () => {
         console.log('[LCUBridge] Connected to Rift');
         this.isConnected = true;
+        this.notifyConnectionListeners(true);
         handleResolve();
       };
 
@@ -69,20 +71,21 @@ export class LCUBridge {
 
       this.socket.onclose = () => {
         console.log('[LCUBridge] Disconnected from Rift, state:', this.socket?.state, 'wasConnected:', this.isConnected);
-        
+
         const wasConnected = this.isConnected;
         this.isConnected = false;
-        
+        this.notifyConnectionListeners(false);
+
         // Reject all pending requests
         for (const [, { reject: rejectRequest }] of this.pendingRequests.entries()) {
           rejectRequest(new Error('Connection closed'));
         }
         this.pendingRequests.clear();
         this.observers.clear();
-        
+
         // Provide helpful error message based on state and URL
         let errorMessage = 'Connection closed';
-        
+
         if (this.socket?.state === 1) { // FAILED_NO_DESKTOP
           errorMessage = 'Desktop app not found. Make sure:\n1. Desktop app is running\n2. You are signed in with the same account';
         } else if (this.socket?.state === 2) { // FAILED_DESKTOP_DENY
@@ -90,12 +93,12 @@ export class LCUBridge {
         } else if (riftUrl.includes('localhost') || riftUrl.includes('127.0.0.1')) {
           errorMessage = 'Cannot connect using localhost on a physical device. Please use your computer\'s IP address (e.g., 192.168.1.100:51001).';
         }
-        
+
         // If we were connected and now disconnected, notify via callback
         if (wasConnected && this.disconnectCallback) {
           this.disconnectCallback(errorMessage);
         }
-        
+
         handleReject(errorMessage);
       };
 
@@ -196,6 +199,7 @@ export class LCUBridge {
    */
   disconnect() {
     this.isConnected = false; // Set before close to prevent callback
+    this.notifyConnectionListeners(false);
     if (this.socket) {
       this.socket.close();
       this.socket = null;
@@ -223,6 +227,33 @@ export class LCUBridge {
    */
   setDisconnectCallback(callback: (reason: string) => void): void {
     this.disconnectCallback = callback;
+  }
+
+  /**
+   * Adds a connection listener
+   */
+  addConnectionListener(callback: (connected: boolean) => void): void {
+    this.connectionListeners.add(callback);
+  }
+
+  /**
+   * Removes a connection listener
+   */
+  removeConnectionListener(callback: (connected: boolean) => void): void {
+    this.connectionListeners.delete(callback);
+  }
+
+  /**
+   * Notifies all connection listeners
+   */
+  private notifyConnectionListeners(connected: boolean): void {
+    this.connectionListeners.forEach(listener => {
+      try {
+        listener(connected);
+      } catch (e) {
+        console.error('[LCUBridge] Error in connection listener:', e);
+      }
+    });
   }
 
   /**
@@ -265,7 +296,7 @@ export async function checkDesktopOnline(userId: string, riftHttpUrl: string): P
 }> {
   try {
     const response = await fetch(`${riftHttpUrl}/status/${userId}`);
-    
+
     if (!response.ok) {
       return {
         desktopOnline: false,

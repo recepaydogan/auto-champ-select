@@ -51,7 +51,7 @@ export default class RiftSocket {
   public onopen: (() => void) | null = null;
   public onmessage: ((msg: { data: string }) => void) | null = null;
   public onclose: (() => void) | null = null;
-  public readyState = WebSocket.CONNECTING;
+  public readyState: number = WebSocket.CONNECTING;
   public state: RiftSocketStateValue = RiftSocketState.CONNECTING;
 
   private key: CryptoKey | Uint8Array | null = null; // CryptoKey for web, Uint8Array for React Native
@@ -68,10 +68,10 @@ export default class RiftSocket {
       // If no protocol specified, assume ws://
       wsUrl = `ws://${riftUrl}`;
     }
-    
+
     wsUrl = `${wsUrl}/mobile?userId=${userId}`;
     console.log('[RiftSocket] Connecting to:', wsUrl);
-    
+
     this.socket = new WebSocket(wsUrl);
     this.socket.onopen = this.handleOpen;
     this.socket.onmessage = this.handleMessage;
@@ -93,14 +93,14 @@ export default class RiftSocket {
       // Generate random IV
       const iv = new Uint8Array(16);
       crypto.getRandomValues(iv);
-      
+
       // Encrypt using Web Crypto
       const encryptedBuffer = await crypto.subtle.encrypt(
         { name: 'AES-CBC', iv: iv },
         this.key as CryptoKey,
         new TextEncoder().encode(contents)
       );
-      
+
       const ivBase64 = this.arrayBufferToBase64(iv.buffer);
       const encryptedBase64 = this.arrayBufferToBase64(encryptedBuffer);
       encryptedPayload = ivBase64 + ':' + encryptedBase64;
@@ -110,26 +110,26 @@ export default class RiftSocket {
       const keyBuffer = new ArrayBuffer(keyArray.length);
       new Uint8Array(keyBuffer).set(keyArray);
       const keyBase64 = this.arrayBufferToBase64(keyBuffer);
-      
+
       console.log('[RiftSocket] Encrypting with key base64:', keyBase64);
-      
+
       // Generate random IV using CryptoJS
       const ivWords = CryptoJS.lib.WordArray.random(16);
       const ivBase64 = ivWords.toString(CryptoJS.enc.Base64);
-      
+
       // Parse key
       const key = CryptoJS.enc.Base64.parse(keyBase64);
-      
+
       // Encrypt - use CryptoJS base64 directly, no intermediate conversions!
       const encrypted = CryptoJS.AES.encrypt(contents, key, {
         iv: ivWords,
         mode: CryptoJS.mode.CBC,
         padding: CryptoJS.pad.Pkcs7
       });
-      
+
       const encryptedBase64 = encrypted.ciphertext.toString(CryptoJS.enc.Base64);
       encryptedPayload = ivBase64 + ':' + encryptedBase64;
-      
+
       console.log('[RiftSocket] Encrypted payload:', encryptedPayload.substring(0, 50) + '...');
     }
 
@@ -236,11 +236,11 @@ export default class RiftSocket {
     // Encrypt identity with RSA public key
     const deviceId = this.getDeviceID();
     const { device, browser } = this.getDeviceDescription();
-    
+
     const secretBase64 = this.arrayBufferToBase64(secret.buffer);
     console.log('[RiftSocket] Sending secret key base64:', secretBase64);
     console.log('[RiftSocket] Secret key base64 length:', secretBase64.length);
-    
+
     const identify = JSON.stringify({
       secret: secretBase64,
       identity: deviceId,
@@ -322,19 +322,19 @@ export default class RiftSocket {
         const keyBuffer = new ArrayBuffer(keyArray.length);
         new Uint8Array(keyBuffer).set(keyArray);
         const keyBase64 = this.arrayBufferToBase64(keyBuffer);
-        
+
         // Parse directly from base64 - much simpler!
         const key = CryptoJS.enc.Base64.parse(keyBase64);
         const iv = CryptoJS.enc.Base64.parse(ivBase64);
         const ciphertext = CryptoJS.enc.Base64.parse(encryptedBase64);
-        
+
         const decryptedCrypto = CryptoJS.AES.decrypt(
           { ciphertext: ciphertext } as any,
           key,
           { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
         );
         decrypted = decryptedCrypto.toString(CryptoJS.enc.Utf8);
-        
+
         if (!decrypted) {
           console.error('[RiftSocket] Decryption failed - empty result');
           return;
@@ -392,12 +392,12 @@ export default class RiftSocket {
     // The pubkey from Rift is base64 SPKI format
     // Convert to ArrayBuffer
     const binaryDer = this.base64ToArrayBuffer(pubkey);
-    
+
     // Use Web Crypto API (available in Expo web, or polyfilled)
     if (typeof crypto === 'undefined' || !crypto.subtle) {
       throw new Error('Web Crypto API not available');
     }
-    
+
     return await crypto.subtle.importKey(
       'spki',
       binaryDer,
@@ -429,19 +429,19 @@ export default class RiftSocket {
       new Uint8Array(keyBuffer).set(keyArray);
       const keyBase64 = this.arrayBufferToBase64(keyBuffer);
       const key = CryptoJS.enc.Base64.parse(keyBase64);
-      
+
       // Convert IV to base64 then to CryptoJS WordArray
       const ivBuffer = new ArrayBuffer(iv.length);
       new Uint8Array(ivBuffer).set(iv);
       const ivBase64 = this.arrayBufferToBase64(ivBuffer);
       const ivCrypto = CryptoJS.enc.Base64.parse(ivBase64);
-      
+
       const encrypted = CryptoJS.AES.encrypt(data, key, {
         iv: ivCrypto,
         mode: CryptoJS.mode.CBC,
         padding: CryptoJS.pad.Pkcs7
       });
-      
+
       // Convert CryptoJS ciphertext to ArrayBuffer
       const encryptedBase64 = encrypted.ciphertext.toString(CryptoJS.enc.Base64);
       return this.base64ToArrayBuffer(encryptedBase64);
@@ -460,7 +460,7 @@ export default class RiftSocket {
     for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);
     }
-    
+
     if (Platform.OS === 'web') {
       return btoa(binary);
     } else {
@@ -468,14 +468,14 @@ export default class RiftSocket {
       const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
       let result = '';
       const len = binary.length;
-      
+
       for (let i = 0; i < len; i += 3) {
         const a = binary.charCodeAt(i);
         const b = i + 1 < len ? binary.charCodeAt(i + 1) : 0;
         const c = i + 2 < len ? binary.charCodeAt(i + 2) : 0;
-        
+
         const bitmap = (a << 16) | (b << 8) | c;
-        
+
         result += chars.charAt((bitmap >> 18) & 63);
         result += chars.charAt((bitmap >> 12) & 63);
         result += (i + 1 < len) ? chars.charAt((bitmap >> 6) & 63) : '=';
