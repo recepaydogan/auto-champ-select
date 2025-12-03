@@ -357,6 +357,22 @@ export default function HomeScreen({ session }: { session: Session }) {
         };
     }, [connected, checkStatus]);
 
+    // Fallback gameflow poll to stay in sync with desktop transitions
+    useEffect(() => {
+        if (!connected) return;
+        const interval = setInterval(async () => {
+            try {
+                const res = await lcuBridge.request('/lol-gameflow/v1/session');
+                if (res.status === 200 && res.content?.phase) {
+                    updateGamePhase(res.content.phase);
+                }
+            } catch {
+                // ignore transient errors
+            }
+        }, 2000);
+        return () => clearInterval(interval);
+    }, [connected, lcuBridge, updateGamePhase]);
+
     const handleConnect = async () => {
         if (!session?.user?.id) {
             showAlert('Error', 'No user session available', undefined, 'error');
@@ -490,34 +506,37 @@ export default function HomeScreen({ session }: { session: Session }) {
         if (!connected) return;
 
         let nonePhaseTimeout: NodeJS.Timeout | null = null;
+        let phaseRefresher: NodeJS.Timeout | null = null;
 
         const unsubscribe = lcuBridge.observe('/lol-gameflow/v1/session', (result) => {
             const phase = result?.content?.phase;
             if (result.status === 200 && phase) {
-                // Valid phase - clear any pending "None" timeout and set phase immediately
                 if (nonePhaseTimeout) {
                     clearTimeout(nonePhaseTimeout);
                     nonePhaseTimeout = null;
                 }
                 updateGamePhase(phase);
+                // When champ select starts, trigger an immediate refresh to sync team/bench
+                if (phase === 'ChampSelect') {
+                    lcuBridge.request('/lol-champ-select/v1/session').then((res) => {
+                        if (res.status === 200 && res.content) {
+                            applyChampSelectUpdate(res.content);
+                        }
+                    }).catch(() => { /* ignore */ });
+                }
                 return;
             }
 
-            // Only treat 404 as "None" (session deleted).
-            // Ignore other errors (500, etc) to prevent flickering during transient issues.
             if (result.status !== 404) {
                 return;
             }
 
-            // Invalid/None phase - wait a bit before setting to None to avoid flickering
-            // This handles transient 404s or empty responses during transitions
             if (!nonePhaseTimeout && gamePhaseRef.current !== 'None') {
                 nonePhaseTimeout = setTimeout(() => {
                     clearGamePhase();
                     nonePhaseTimeout = null;
-                }, 500); // 500ms grace period
+                }, 500);
             } else if (gamePhaseRef.current === 'None') {
-                // Already None, keep it
                 if (nonePhaseTimeout) {
                     clearTimeout(nonePhaseTimeout);
                     nonePhaseTimeout = null;
@@ -525,11 +544,30 @@ export default function HomeScreen({ session }: { session: Session }) {
             }
         });
 
+        // Fallback periodic sync while connected to keep gamePhase fresh
+        phaseRefresher = setInterval(async () => {
+            try {
+                const res = await lcuBridge.request('/lol-gameflow/v1/session');
+                if (res.status === 200 && res.content?.phase) {
+                    updateGamePhase(res.content.phase);
+                    if (res.content.phase === 'ChampSelect') {
+                        const cs = await lcuBridge.request('/lol-champ-select/v1/session');
+                        if (cs.status === 200 && cs.content) {
+                            applyChampSelectUpdate(cs.content);
+                        }
+                    }
+                }
+            } catch {
+                // ignore
+            }
+        }, 2000);
+
         return () => {
             if (nonePhaseTimeout) clearTimeout(nonePhaseTimeout);
+            if (phaseRefresher) clearInterval(phaseRefresher);
             unsubscribe();
         };
-    }, [clearGamePhase, connected, lcuBridge, updateGamePhase]);
+    }, [applyChampSelectUpdate, clearGamePhase, connected, lcuBridge, updateGamePhase]);
 
     // Clear lobby when gamePhase becomes None
     useEffect(() => {
@@ -583,6 +621,18 @@ export default function HomeScreen({ session }: { session: Session }) {
                     applyChampSelectUpdate(result.content);
                 }
             }).catch(e => console.warn('[HomeScreen] Failed to fetch champ select on phase change', e));
+        } else if (gamePhase === 'None') {
+            // Game ended; check if lobby exists and sync back to lobby screen
+            lcuBridge.request('/lol-lobby/v2/lobby').then(result => {
+                if (result.status === 200 && result.content) {
+                    applyLobbyUpdate(result.content);
+                    updateGamePhase('Lobby');
+                } else {
+                    clearLobbyState();
+                }
+            }).catch(() => {
+                clearLobbyState();
+            });
         }
     }, [gamePhase, connected, lcuBridge, applyLobbyUpdate, applyChampSelectUpdate, startQueueTimer, applyReadyCheckUpdate]);
 
@@ -978,11 +1028,23 @@ export default function HomeScreen({ session }: { session: Session }) {
 
     const handlePickChampion = async (championId: number) => {
         if (!ensureConnected()) return;
-        if (!champSelect) return;
 
         try {
-            const localPlayerCellId = champSelect.localPlayerCellId;
-            const myTeam = champSelect.myTeam || [];
+            let session = champSelect;
+            if (!session) {
+                const res = await lcuBridge.request('/lol-champ-select/v1/session');
+                if (res.status === 200 && res.content) {
+                    setChampSelect(res.content);
+                    session = res.content;
+                }
+            }
+            if (!session) {
+                showAlert('Error', 'No champ select session available', undefined, 'error');
+                return;
+            }
+
+            const localPlayerCellId = session.localPlayerCellId;
+            const myTeam = session.myTeam || [];
             const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
 
             if (!localPlayer) {
@@ -990,19 +1052,47 @@ export default function HomeScreen({ session }: { session: Session }) {
                 return;
             }
 
-            const actions = champSelect.actions || [];
-            for (const turn of actions) {
-                for (const action of turn) {
-                    if (action.actorCellId === localPlayerCellId && !action.completed) {
-                        await lcuBridge.request(
-                            `/lol-champ-select/v1/session/actions/${action.id}`,
-                            'PATCH',
-                            { championId, completed: true }
-                        );
-                        return;
+            const findActiveAction = (s: any) => {
+                const acts = s?.actions || [];
+                for (const turn of acts) {
+                    for (const action of turn) {
+                        if (
+                            action.actorCellId === localPlayerCellId &&
+                            !action.completed &&
+                            action.isInProgress &&
+                            (action.type || '').toLowerCase() === 'pick' &&
+                            typeof action.id === 'number' &&
+                            action.id >= 0
+                        ) {
+                            return action;
+                        }
                     }
                 }
+                return null;
+            };
+
+            let current = findActiveAction(session);
+
+            if (!current) {
+                // Try a fresh session once
+                const refreshed = await lcuBridge.request('/lol-champ-select/v1/session');
+                if (refreshed.status === 200 && refreshed.content) {
+                    setChampSelect(refreshed.content);
+                    session = refreshed.content;
+                    current = findActiveAction(session);
+                }
             }
+
+            if (!current) {
+                showAlert('Error', 'No active pick turn right now', undefined, 'error');
+                return;
+            }
+
+            await lcuBridge.request(
+                `/lol-champ-select/v1/session/actions/${current.id}`,
+                'PATCH',
+                { championId, completed: true }
+            );
         } catch (error: any) {
             showAlert('Error', error.message || 'Failed to pick champion', undefined, 'error');
         }

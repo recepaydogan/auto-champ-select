@@ -745,7 +745,7 @@ export default function LobbyScreen({
                         onPress={onEnterQueue}
                         buttonStyle={styles.queueButton}
                         containerStyle={styles.buttonContainer}
-                        disabled={!lobby?.canStartActivity}
+                        disabled={!localMember?.isLeader}
                     />
                     <Button
                         title="Leave Lobby"

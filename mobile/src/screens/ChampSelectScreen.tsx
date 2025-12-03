@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Modal, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, TextInput, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Tab, TabView } from '@rneui/themed';
 import { getLCUBridge } from '../lib/lcuBridge';
@@ -29,15 +29,11 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const [pickableChampionIds, setPickableChampionIds] = useState<number[]>(
         () => Array.isArray(champSelect?.pickableChampionIds) ? champSelect.pickableChampionIds : []
     );
-    const [benchChampionIds, setBenchChampionIds] = useState<number[]>(
-        () => Array.isArray(champSelect?.benchChampionIds) ? champSelect.benchChampionIds : []
-    );
     const [loadingPickablePool, setLoadingPickablePool] = useState(false);
     const [loadingBench, setLoadingBench] = useState(false);
     const [ddragonVersion, setDdragonVersion] = useState('14.23.1');
     const [loadingResources, setLoadingResources] = useState(true);
     const spellMapRef = React.useRef<Record<number, string>>({});
-    const [waitModalVisible, setWaitModalVisible] = useState(false);
     const [selectionMode, setSelectionMode] = useState<'pick' | 'ban'>('pick');
     const [confirmModal, setConfirmModal] = useState<{ visible: boolean; championId: number | null; action: 'pick' | 'ban' }>({ visible: false, championId: null, action: 'pick' });
     const [timeLeft, setTimeLeft] = useState<number>(() => champSelect?.timer?.adjustedTimeLeftInPhase ? Math.ceil(champSelect.timer.adjustedTimeLeftInPhase / 1000) : 0);
@@ -95,21 +91,31 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     }, [currentAction?.type]);
 
     const timerSyncRef = React.useRef<{ msLeft: number; syncedAt: number }>({ msLeft: 0, syncedAt: Date.now() });
+    const swapCooldownRef = React.useRef<Map<number, number>>(new Map());
 
     useEffect(() => {
-        const ms = champSelect?.timer?.adjustedTimeLeftInPhase;
-        if (typeof ms === 'number') {
-            timerSyncRef.current = { msLeft: ms, syncedAt: Date.now() };
-            setTimeLeft(Math.max(0, Math.ceil(ms / 1000)));
-        }
-        const interval = setInterval(() => {
+        const compute = () => {
+            const timer = champSelect?.timer;
+            if (timer && typeof timer.adjustedTimeLeftInPhase === 'number') {
+                const serverNow = typeof timer.internalNowInEpochMs === 'number' ? timer.internalNowInEpochMs : Date.now();
+                const delta = Date.now() - serverNow;
+                const remainingMs = timer.adjustedTimeLeftInPhase - delta;
+                timerSyncRef.current = { msLeft: timer.adjustedTimeLeftInPhase, syncedAt: serverNow };
+                setTimeLeft(Math.max(0, Math.round(remainingMs / 1000)));
+                return;
+            }
+
+            // Fallback to last known timer
             const { msLeft, syncedAt } = timerSyncRef.current;
             const elapsed = Date.now() - syncedAt;
             const remainingMs = msLeft - elapsed;
-            setTimeLeft(Math.max(0, Math.ceil(remainingMs / 1000)));
-        }, 500);
+            setTimeLeft(Math.max(0, Math.round(remainingMs / 1000)));
+        };
+
+        compute();
+        const interval = setInterval(compute, 150);
         return () => clearInterval(interval);
-    }, [champSelect?.timer?.adjustedTimeLeftInPhase, champSelect?.timer?.phase]);
+    }, [champSelect?.timer?.adjustedTimeLeftInPhase, champSelect?.timer?.phase, champSelect?.timer?.internalNowInEpochMs]);
 
     // Debug logging for bench data
     useEffect(() => {
@@ -153,7 +159,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         return Array.from(new Set(ids));
     }, []);
 
-    // Keep pickable champion IDs in sync and fall back to LCU endpoint when not present in session payload
+    // Keep pickable champion IDs in sync (single fetch; avoid long polling)
     useEffect(() => {
         let cancelled = false;
         const inlinePickable = Array.isArray(champSelect?.pickableChampionIds)
@@ -173,78 +179,34 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             return () => { cancelled = true; };
         }
 
-        setLoadingPickablePool(true);
-        let polling = true;
-
-        const poll = async () => {
-            while (!cancelled && polling) {
-                try {
-                    const result = await lcuBridge.request('/lol-champ-select/v1/pickable-champion-ids');
-                    if (!cancelled && result.status === 200 && Array.isArray(result.content)) {
-                        const filtered = result.content.filter((id: any) => typeof id === 'number' && id > 0);
-                        if (filtered.length > 0) {
-                            setPickableChampionIds(Array.from(new Set(filtered)));
-                            setLoadingPickablePool(false);
-                            polling = false;
-                            return;
-                        }
-                    }
-                } catch (error) {
-                    if (!cancelled) {
-                        console.warn('[ChampSelect] Failed to fetch pickable champion ids', error);
+        const fetchOnce = async () => {
+            setLoadingPickablePool(true);
+            try {
+                const result = await lcuBridge.request('/lol-champ-select/v1/pickable-champion-ids');
+                if (!cancelled && result.status === 200 && Array.isArray(result.content)) {
+                    const filtered = result.content.filter((id: any) => typeof id === 'number' && id > 0);
+                    if (filtered.length > 0) {
+                        setPickableChampionIds(Array.from(new Set(filtered)));
                     }
                 }
-                await new Promise(resolve => setTimeout(resolve, 800));
+            } catch (error) {
+                if (!cancelled) {
+                    console.warn('[ChampSelect] Failed to fetch pickable champion ids', error);
+                }
+            } finally {
+                if (!cancelled) setLoadingPickablePool(false);
             }
         };
 
-        poll();
-        return () => { cancelled = true; polling = false; };
+        fetchOnce();
+        return () => { cancelled = true; };
     }, [champSelect?.pickableChampionIds, isARAM, lcuBridge]);
 
     // Keep bench champions in sync, pulling from dedicated bench endpoint when session payload omits them
     useEffect(() => {
-        let cancelled = false;
-        const applyBench = (payload: any) => {
-            const parsed = normalizeBenchPayload(payload);
-            if (parsed.length > 0 || payload?.benchChampionIds !== undefined || payload?.benchChampions !== undefined) {
-                setBenchChampionIds(parsed);
-            }
-        };
-
-        // First, trust the session payload if it contains bench info
-        applyBench({
-            benchChampionIds: champSelect?.benchChampionIds,
-            benchChampions: (champSelect as any)?.benchChampions,
-            champions: (champSelect as any)?.champions,
-            championIds: (champSelect as any)?.championIds
-        });
-
-        const needsBenchFetch =
-            isARAM &&
-            (champSelect?.benchEnabled || champSelect?.benchSwapEnabled || normalizedGameMode === 'KIWI') &&
-            (benchChampionIds.length === 0);
-
-        const fetchBench = async () => {
-            if (!needsBenchFetch) return;
-            setLoadingBench(true);
-            try {
-                const result = await lcuBridge.request('/lol-champ-select/v1/session/bench');
-                if (!cancelled && result.status === 200) {
-                    applyBench(result.content);
-                }
-            } catch (error) {
-                if (!cancelled) {
-                    console.warn('[ChampSelect] Failed to fetch bench state', error);
-                }
-            } finally {
-                if (!cancelled) setLoadingBench(false);
-            }
-        };
-
-        fetchBench();
-        return () => { cancelled = true; };
-    }, [benchChampionIds.length, champSelect?.benchChampionIds, champSelect?.benchChampions, champSelect?.benchEnabled, champSelect?.benchSwapEnabled, isARAM, lcuBridge, normalizeBenchPayload, normalizedGameMode]);
+        // No extra bench polling; rely on session updates
+        setLoadingBench(false);
+    }, []);
 
     const refreshRunes = useCallback(async () => {
         try {
@@ -848,6 +810,13 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
 
         // Get champion name for messages
         const championName = championMap[championId]?.name || 'Champion';
+        const now = Date.now();
+        const cooldownEnd = swapCooldownRef.current.get(championId);
+        if (cooldownEnd && cooldownEnd > now) {
+            const msg = 'Wait a moment before selecting this champion from bench.';
+            if (onError) onError(msg);
+            return;
+        }
 
         setSwappingChampionId(championId);
 
@@ -858,34 +827,56 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             const result = await lcuBridge.request(`/lol-champ-select/v1/session/bench/swap/${championId}`, 'POST');
 
             if (result.status === 200 || result.status === 204) {
-                console.log(`[ChampSelect] Successfully swapped with ${championName}`);
+                // Apply 3s cooldown to the outgoing champion (local player current pick)
+                const outgoingChampionId = localPlayer?.championId && localPlayer.championId > 0 ? localPlayer.championId : null;
+                if (outgoingChampionId) {
+                    swapCooldownRef.current.set(outgoingChampionId, Date.now() + 3000);
+                }
 
-                // Refresh champ select data after a short delay to allow server to update
-                setTimeout(async () => {
-                    try {
-                        const refreshResult = await lcuBridge.request('/lol-champ-select/v1/session');
-                        if (refreshResult.status === 200 && refreshResult.content) {
-                            const updatedLocalPlayer = refreshResult.content.myTeam?.find(
-                                (m: any) => m.cellId === refreshResult.content.localPlayerCellId
-                            );
-                            if (updatedLocalPlayer?.championId && updatedLocalPlayer.championId > 0) {
-                                loadSkins(updatedLocalPlayer.championId);
-                            }
-                        }
-                    } catch (refreshError) {
-                        console.error('Failed to refresh champ select after swap:', refreshError);
+                // Refresh bench state once to reflect the swap quickly
+                try {
+                    const benchRes = await lcuBridge.request('/lol-champ-select/v1/session/bench');
+                    if (benchRes.status === 200 && benchRes.content) {
+                        const parsed = normalizeBenchPayload(benchRes.content);
+                        if (parsed.length > 0) setBenchChampionIds(parsed);
                     }
-                }, 500);
+                } catch { /* ignore */ }
+
+                // Refresh session once to update local player skin/pick info
+                try {
+                    const refreshResult = await lcuBridge.request('/lol-champ-select/v1/session');
+                    if (refreshResult.status === 200 && refreshResult.content) {
+                        const updatedLocalPlayer = refreshResult.content.myTeam?.find(
+                            (m: any) => m.cellId === refreshResult.content.localPlayerCellId
+                        );
+                        if (updatedLocalPlayer?.championId && updatedLocalPlayer.championId > 0) {
+                            loadSkins(updatedLocalPlayer.championId);
+                        }
+                        const inlinePickable = Array.isArray(refreshResult.content.pickableChampionIds)
+                            ? refreshResult.content.pickableChampionIds.filter((id: any) => typeof id === 'number' && id > 0)
+                            : [];
+                        if (inlinePickable.length > 0) {
+                            setPickableChampionIds(Array.from(new Set(inlinePickable)));
+                        }
+                        // update bench from session payload too
+                        const parsedSessionBench = normalizeBenchPayload({
+                            benchChampionIds: refreshResult.content.benchChampionIds,
+                            benchChampions: (refreshResult.content as any)?.benchChampions,
+                            champions: (refreshResult.content as any)?.champions,
+                            championIds: (refreshResult.content as any)?.championIds
+                        });
+                        if (parsedSessionBench.length > 0) setBenchChampionIds(parsedSessionBench);
+                    }
+                } catch { /* ignore */ }
             } else {
                 throw new Error(`Swap failed with status ${result.status}`);
             }
         } catch (error: any) {
-            console.error('Failed to swap:', error);
-            const errorMsg = error.message || `Failed to swap to ${championName}. Please try again.`;
+            console.warn('Failed to swap:', error);
+            const errorMsg = 'Wait for a while to swap!';
             if (onError) onError(errorMsg);
 
-            // If swap fails (likely bench not ready), show wait modal and refresh bench once
-            setWaitModalVisible(true);
+            // If swap fails (likely bench not ready), refresh bench once
             try {
                 const benchRefresh = await lcuBridge.request('/lol-champ-select/v1/session/bench');
                 if (benchRefresh.status === 200 && benchRefresh.content) {
@@ -897,34 +888,82 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             }
         } finally {
             setSwappingChampionId(null);
+            const nowTs = Date.now();
+            swapCooldownRef.current.forEach((end, key) => {
+                if (end <= nowTs) swapCooldownRef.current.delete(key);
+            });
         }
     };
 
     const handleChampionSelect = async (championId: number) => {
-        // Once picked on SR, prevent further clicks (ARAM swaps handled via bench)
-        if (!isARAM && hasPickedChampion && selectionMode === 'pick' && !currentAction) return;
+        try {
+            // Always work from the freshest session to avoid stale actions
+            let session = champSelect;
+            try {
+                const res = await lcuBridge.request('/lol-champ-select/v1/session');
+                if (res.status === 200 && res.content) {
+                    session = res.content;
+                    setChampSelect?.(res.content as any);
+                }
+            } catch {
+                // ignore; fall back to current champSelect prop
+            }
+            if (!session) return;
 
-        // In ARAM/Şamata modes, ensure we only try to pick from the offered pool (pickable or bench-derived)
-        if (isARAM) {
-            const offeredSet = new Set(offeredChampionIds);
-            if (offeredSet.size > 0 && !offeredSet.has(championId)) {
-                const msg = 'This champion is not in your offered pool for this roll.';
+            const localPlayerCellId = session.localPlayerCellId;
+            const myTeam = session.myTeam || [];
+            const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
+            const hasPicked = !!(localPlayer?.championId && localPlayer.championId > 0);
+
+            // In ARAM/Şamata modes, ensure we only try to pick from the offered pool
+            if (isARAM) {
+                const offeredSet = new Set(offeredChampionIds);
+                if (offeredSet.size > 0 && !offeredSet.has(championId)) {
+                    const msg = 'This champion is not in your offered pool for this roll.';
+                    if (onError) onError(msg);
+                    return;
+                }
+            }
+
+            const actions = session.actions || [];
+            const current = (() => {
+                for (const turn of actions) {
+                    for (const action of turn) {
+                        if (
+                            action.actorCellId === localPlayerCellId &&
+                            !action.completed &&
+                            action.isInProgress &&
+                            (action.type || '').toLowerCase() === 'pick' &&
+                            typeof action.id === 'number' &&
+                            action.id >= 0
+                        ) {
+                            return action;
+                        }
+                    }
+                }
+                return null;
+            })();
+
+            if (!current) {
+                const msg = 'No active pick turn right now.';
                 if (onError) onError(msg);
                 return;
             }
-        }
 
-        // 1. Hover the champion first (update LCU)
-        if (currentAction) {
-            try {
-                await lcuBridge.request(`/lol-champ-select/v1/session/actions/${currentAction.id}`, 'PATCH', { championId });
-            } catch (e) {
-                console.warn('[ChampSelect] Failed to hover champion', e);
+            // Hover the champion first if we have an active action
+            if (current) {
+                try {
+                    await lcuBridge.request(`/lol-champ-select/v1/session/actions/${current.id}`, 'PATCH', { championId, completed: false });
+                } catch (e) {
+                    console.warn('[ChampSelect] Failed to hover champion', e);
+                }
             }
-        }
 
-        // 2. Show confirmation modal
-        setConfirmModal({ visible: true, championId, action: selectionMode });
+            // Show confirmation modal
+            setConfirmModal({ visible: true, championId, action: selectionMode });
+        } catch (error) {
+            console.warn('[ChampSelect] handleChampionSelect failed', error);
+        }
     };
 
     const confirmChampionAction = () => {
@@ -1041,28 +1080,26 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         return champions;
     }, [champions, isARAM, pickableChampionIds]);
 
+    const benchChampionIds = useMemo(() => {
+        const parsed = normalizeBenchPayload({
+            benchChampionIds: champSelect?.benchChampionIds,
+            benchChampions: (champSelect as any)?.benchChampions,
+            champions: (champSelect as any)?.champions,
+            championIds: (champSelect as any)?.championIds
+        });
+        return Array.isArray(parsed) ? parsed : [];
+    }, [champSelect, normalizeBenchPayload]);
+
     const offeredChampionIds = useMemo(() => {
         if (!isARAM) return [];
 
-        // Prefer explicit benchChampions from the live session payload (these reflect the ARAM offers)
-        const sessionBench = Array.isArray((champSelect as any)?.benchChampions)
-            ? (champSelect as any).benchChampions
-            : [];
-        const sessionBenchIds = sessionBench
-            .map((b: any) => (typeof b?.championId === 'number' ? b.championId : null))
-            .filter((id: any) => typeof id === 'number' && id > 0);
+        if (benchChampionIds.length > 0) return Array.from(new Set(benchChampionIds));
 
-        if (sessionBenchIds.length > 0) return Array.from(new Set(sessionBenchIds));
-
-        // Next, try pickableChampionIds if the client populates it
         const inline = Array.isArray(pickableChampionIds) ? pickableChampionIds : [];
         if (inline.length > 0) return Array.from(new Set(inline));
 
-        // Finally, fall back to our bench state
-        if (benchChampionIds.length > 0) return Array.from(new Set(benchChampionIds));
-
         return [];
-    }, [benchChampionIds, champSelect, isARAM, pickableChampionIds]);
+    }, [benchChampionIds, isARAM, pickableChampionIds]);
 
     const hasOfferedPool = offeredChampionIds.length > 0;
     const showBenchWidget = isARAM;
@@ -1096,112 +1133,120 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 <TabView value={index} onChange={setIndex} animationType="spring">
                     {/* Champion Tab */}
                     <TabView.Item style={styles.tabContent}>
-                        <ScrollView
-                            style={styles.championTabContent}
-                            contentContainerStyle={styles.championTabContentContainer}
-                            showsVerticalScrollIndicator={false}
-                        >
-                            <View style={styles.teamViewContainer}>
-                                <TeamView
-                                    myTeam={enhancedMyTeam}
-                                    theirTeam={enhancedTheirTeam}
-                                    bans={isARAM ? [] : bannedIds}
-                                    version={ddragonVersion}
-                                />
-                            </View>
-
-                            {/* Offered Champions removed per request */}
-
-                            {showBenchWidget && (
-                                <View style={styles.aramScrollWrapper}>
-                                    <View style={styles.aramMessageContainer}>
-                                        <Text style={styles.aramMessage}>ARAM Bench</Text>
-                                        <Text style={styles.aramSubMessage}>Your available swaps appear below.</Text>
-                                    </View>
-
-                                    <Text style={[styles.sectionTitle, { marginTop: 10 }]}>Available to Swap</Text>
-                                    {(!benchChampionIds || benchChampionIds.length === 0) ? (
-                                        <View style={styles.emptyBenchContainer}>
-                                            {loadingBench ? (
-                                                <ActivityIndicator size="small" color="#4f46e5" />
-                                            ) : (
-                                                <>
-                                                    <Text style={styles.emptyBenchText}>Bench is empty right now</Text>
-                                                    <Text style={styles.emptyBenchSubText}>Unpicked champs will appear here</Text>
-                                                </>
-                                            )}
-                                        </View>
-                                    ) : (
-                                        <View style={styles.benchGrid}>
-                                            {benchChampionIds.map((id: number) => {
-                                                const isSwapping = swappingChampionId === id;
-                                                const champion = championMap[id];
-                                                const championName = champion?.name || 'Unknown';
-
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={`bench-${id}`}
-                                                        onPress={() => handleSwap(id)}
-                                                        style={[
-                                                            styles.benchItem,
-                                                            isSwapping && styles.benchItemSwapping
-                                                        ]}
-                                                        disabled={isSwapping || swappingChampionId !== null}
-                                                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                                                        activeOpacity={0.8}
-                                                    >
-                                                        {isSwapping ? (
-                                                            <View style={styles.benchLoadingContainer}>
-                                                                <ActivityIndicator size="small" color="#4f46e5" />
-                                                            </View>
-                                                        ) : (
-                                                            <>
-                                                                {safeImageUri(champion?.key ? `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` : null) ? (
-                                                                    <Image
-                                                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` }}
-                                                                        style={styles.benchImage}
-                                                                    />
-                                                                ) : (
-                                                                    <View style={[styles.benchImage, styles.benchPlaceholder]} />
-                                                                )}
-                                                                <View style={styles.benchOverlay}>
-                                                                    <Text style={styles.benchSwapText}>SWAP</Text>
-                                                                </View>
-                                                            </>
-                                                        )}
-                                                        <Text style={styles.benchChampionName} numberOfLines={1}>
-                                                            {championName}
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                );
-                                            })}
-                                        </View>
-                                    )}
+                        {isARAM ? (
+                            <ScrollView
+                                style={styles.championTabContent}
+                                contentContainerStyle={styles.championTabContentContainer}
+                                showsVerticalScrollIndicator={false}
+                                nestedScrollEnabled
+                            >
+                                <View style={styles.teamViewContainer}>
+                                    <TeamView
+                                        myTeam={enhancedMyTeam}
+                                        theirTeam={enhancedTheirTeam}
+                                        bans={[]}
+                                        version={ddragonVersion}
+                                    />
                                 </View>
-                            )}
 
-                            {!isARAM && (
-                                <>
-                                    <View style={styles.pickModeRow}>
-                                        <Text style={styles.sectionLabel}>
-                                            {currentAction?.type?.toLowerCase() === 'ban' ? 'Ban Phase' : 'Pick Phase'}
-                                        </Text>
+                                {showBenchWidget && (
+                                    <View style={styles.aramScrollWrapper}>
+                                        <View style={styles.aramMessageContainer}>
+                                            <Text style={styles.aramMessage}>ARAM Bench</Text>
+                                            <Text style={styles.aramSubMessage}>Your available swaps appear below.</Text>
+                                        </View>
+
+                                        <Text style={[styles.sectionTitle, { marginTop: 10 }]}>Available to Swap</Text>
+                                        {(!benchChampionIds || benchChampionIds.length === 0) ? (
+                                            <View style={styles.emptyBenchContainer}>
+                                                {loadingBench ? (
+                                                    <ActivityIndicator size="small" color="#4f46e5" />
+                                                ) : (
+                                                    <>
+                                                        <Text style={styles.emptyBenchText}>Bench is empty right now</Text>
+                                                        <Text style={styles.emptyBenchSubText}>Unpicked champs will appear here</Text>
+                                                    </>
+                                                )}
+                                            </View>
+                                        ) : (
+                                            <View style={styles.benchGrid}>
+                                                {benchChampionIds.map((id: number) => {
+                                                    const isSwapping = swappingChampionId === id;
+                                                    const champion = championMap[id];
+                                                    const championName = champion?.name || 'Unknown';
+
+                                                    return (
+                                                        <TouchableOpacity
+                                                            key={`bench-${id}`}
+                                                            onPress={() => handleSwap(id)}
+                                                            style={[
+                                                                styles.benchItem,
+                                                                isSwapping && styles.benchItemSwapping
+                                                            ]}
+                                                            disabled={isSwapping || swappingChampionId !== null}
+                                                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                                                            activeOpacity={0.8}
+                                                        >
+                                                            {isSwapping ? (
+                                                                <View style={styles.benchLoadingContainer}>
+                                                                    <ActivityIndicator size="small" color="#4f46e5" />
+                                                                </View>
+                                                            ) : (
+                                                                <>
+                                                                    {safeImageUri(champion?.key ? `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` : null) ? (
+                                                                        <Image
+                                                                            source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` }}
+                                                                            style={styles.benchImage}
+                                                                        />
+                                                                    ) : (
+                                                                        <View style={[styles.benchImage, styles.benchPlaceholder]} />
+                                                                    )}
+                                                                    <View style={styles.benchOverlay}>
+                                                                        <Text style={styles.benchSwapText}>SWAP</Text>
+                                                                    </View>
+                                                                </>
+                                                            )}
+                                                            <Text style={styles.benchChampionName} numberOfLines={1}>
+                                                                {championName}
+                                                            </Text>
+                                                        </TouchableOpacity>
+                                                    );
+                                                })}
+                                            </View>
+                                        )}
                                     </View>
-                                    <View style={styles.gridContainer}>
-                                        <ChampionGrid
-                                            champions={displayedChampions}
-                                            onSelect={handleChampionSelect}
-                                            version={ddragonVersion}
-                                            disabled={!isARAM && hasPickedChampion && selectionMode === 'pick' && !currentAction}
-                                            hoveredId={hoveredId}
-                                            teammateHoveredIds={teammateHoveredIds}
-                                            pickedIds={pickedIds}
-                                            bannedIds={bannedIds}
-                                        />
-                                    </View>
-                                </>
-                            )}
-                        </ScrollView>
+                                )}
+                            </ScrollView>
+                        ) : (
+                            <View style={styles.championTabContent}>
+                                <View style={styles.teamViewContainer}>
+                                    <TeamView
+                                        myTeam={enhancedMyTeam}
+                                        theirTeam={enhancedTheirTeam}
+                                        bans={bannedIds}
+                                        version={ddragonVersion}
+                                    />
+                                </View>
+
+                                <View style={styles.pickModeRow}>
+                                    <Text style={styles.sectionLabel}>
+                                        {currentAction?.type?.toLowerCase() === 'ban' ? 'Ban Phase' : 'Pick Phase'}
+                                    </Text>
+                                </View>
+                                <View style={styles.gridContainer}>
+                                    <ChampionGrid
+                                        champions={displayedChampions}
+                                        onSelect={handleChampionSelect}
+                                        version={ddragonVersion}
+                                        disabled={!isARAM && hasPickedChampion && selectionMode === 'pick' && !currentAction}
+                                        hoveredId={hoveredId}
+                                        teammateHoveredIds={teammateHoveredIds}
+                                        pickedIds={pickedIds}
+                                        bannedIds={bannedIds}
+                                    />
+                                </View>
+                            </View>
+                        )}
                     </TabView.Item>
 
                     {/* Loadout Tab */}
@@ -1303,39 +1348,16 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 />
 
                 {/* Confirm pick/ban */}
-                <Modal
+                <CustomModal
                     visible={confirmModal.visible}
-                    animationType="fade"
-                    transparent
-                    onRequestClose={() => setConfirmModal({ visible: false, championId: null, action: selectionMode })}
-                >
-                    <View style={styles.modalOverlay}>
-                        <View style={styles.modalCard}>
-                            <Text style={styles.modalTitle}>
-                                {confirmModal.action === 'ban' ? 'Confirm Ban' : 'Confirm Pick'}
-                            </Text>
-                            <Text style={styles.modalBody}>
-                                Are you sure you want to {confirmModal.action} "{championMap[confirmModal.championId || 0]?.name || 'this champion'}"?
-                            </Text>
-                            <View style={styles.modalActions}>
-                                <Button
-                                    title="Cancel"
-                                    type="outline"
-                                    onPress={() => setConfirmModal({ visible: false, championId: null, action: selectionMode })}
-                                    buttonStyle={styles.modalCancel}
-                                    titleStyle={styles.modalCancelText}
-                                    containerStyle={styles.modalActionContainer}
-                                />
-                                <Button
-                                    title="Yes"
-                                    onPress={confirmChampionAction}
-                                    buttonStyle={styles.modalConfirm}
-                                    containerStyle={styles.modalActionContainer}
-                                />
-                            </View>
-                        </View>
-                    </View>
-                </Modal>
+                    title={confirmModal.action === 'ban' ? 'Confirm Ban' : 'Confirm Pick'}
+                    message={`Are you sure you want to ${confirmModal.action} "${championMap[confirmModal.championId || 0]?.name || 'this champion'}"?`}
+                    buttons={[
+                        { text: 'Cancel', onPress: () => setConfirmModal({ visible: false, championId: null, action: selectionMode }), style: 'cancel' },
+                        { text: 'Yes', onPress: confirmChampionAction, style: 'primary' },
+                    ]}
+                    onClose={() => setConfirmModal({ visible: false, championId: null, action: selectionMode })}
+                />
 
                 {/* Rune builder */}
                 <Modal
@@ -1607,13 +1629,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                     </View>
                 </Modal>
 
-                <CustomModal
-                    visible={waitModalVisible}
-                    title="Please wait"
-                    message="Bench is updating. Try again in a moment."
-                    type="info"
-                    onClose={() => setWaitModalVisible(false)}
-                />
             </View >
         </SafeAreaView>
     );
