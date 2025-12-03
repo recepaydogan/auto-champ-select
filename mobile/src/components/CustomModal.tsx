@@ -3,7 +3,6 @@ import {
     View,
     Text,
     StyleSheet,
-    Modal,
     TouchableOpacity,
     TouchableWithoutFeedback,
     Animated,
@@ -111,13 +110,17 @@ export default function CustomModal({
         };
     }, [visible, type, buttons, autoDismissMs, onClose]);
 
+    // If not visible, render nothing to avoid stray transparent overlays
+    if (!visible) {
+        if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+        }
+        return null;
+    }
+
     return (
-        <Modal
-            visible={visible}
-            transparent
-            animationType="fade"
-            onRequestClose={onClose}
-        >
+        <View style={styles.portal} pointerEvents="box-none">
             <TouchableWithoutFeedback onPress={onClose}>
                 <View style={styles.overlay}>
                     <TouchableWithoutFeedback>
@@ -158,7 +161,7 @@ export default function CustomModal({
                     </TouchableWithoutFeedback>
                 </View>
             </TouchableWithoutFeedback>
-        </Modal>
+        </View>
     );
 }
 
@@ -188,6 +191,15 @@ export const showAlert = (
 };
 
 const styles = StyleSheet.create({
+    portal: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 9999,
+        elevation: 9999,
+    },
     overlay: {
         flex: 1,
         backgroundColor: 'rgba(0, 0, 0, 0.7)',

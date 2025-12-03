@@ -70,7 +70,7 @@ export class BridgeManager {
    */
   private notifyStatusChange(): void {
     const status = this.getStatus();
-    
+
     // Notify UI callback
     if (this.statusChangeCallback) {
       this.statusChangeCallback(status);
@@ -85,7 +85,7 @@ export class BridgeManager {
    */
   private async broadcastStatusToMobile(): Promise<void> {
     const status = this.getStatus();
-    
+
     for (const [uuid, handler] of this.mobileHandlers.entries()) {
       try {
         if (handler.isReady()) {
@@ -110,12 +110,12 @@ export class BridgeManager {
       console.log('[BridgeManager] Already connected, skipping initialization');
       return;
     }
-    
+
     this.config = config;
-    
+
     // Start watching for LCU connection
     this.startLcuWatching();
-    
+
     // Register with Rift server to get JWT token
     await this.registerWithRift();
   }
@@ -129,7 +129,7 @@ export class BridgeManager {
     }
 
     console.log('[BridgeManager] Starting LCU connection watch...');
-    
+
     this.stopLcuWatching = watchLcuConnection(
       async (lcuConfig) => {
         // Skip if we already failed on this port (stale lockfile)
@@ -184,18 +184,18 @@ export class BridgeManager {
     try {
       const { exportPublicKey } = await import('./crypto');
       const publicKey = await exportPublicKey();
-      
+
       // Use XMLHttpRequest instead of fetch for Overwolf compatibility
       // Replace localhost with 127.0.0.1 for Overwolf compatibility
       const riftUrl = this.config!.riftUrl.replace('localhost', '127.0.0.1');
       console.log('[BridgeManager] Registering with Rift at:', riftUrl, 'for user:', this.config.userId);
-      
+
       const data = await new Promise<any>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${riftUrl}/register`, true);
         xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.setRequestHeader('Accept', 'application/json');
-        
+
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
@@ -209,16 +209,16 @@ export class BridgeManager {
             reject(new Error(`Registration failed: ${xhr.statusText} (${xhr.status}) - ${xhr.responseText.substring(0, 100)}`));
           }
         };
-        
+
         xhr.onerror = (event) => {
           console.error('[BridgeManager] XHR error event:', event);
           reject(new Error(`Network error: Failed to connect to Rift server at ${riftUrl}. Make sure the Rift server is running.`));
         };
-        
+
         xhr.ontimeout = () => {
           reject(new Error('Request timeout: Rift server did not respond within 10 seconds'));
         };
-        
+
         xhr.timeout = 10000; // 10 second timeout
         try {
           // Send userId along with pubkey
@@ -311,72 +311,17 @@ export class BridgeManager {
         }
       },
       onConnectionRequest: async (deviceInfo: { device: string; browser: string; identity: string }) => {
-        let approved = false;
-        
-        // Check if we have a direct callback (non-Overwolf environment)
+        // Auto-approve mobile connections when desktop is running—no user prompt required.
+        console.log('[BridgeManager] Auto-approving mobile connection:', deviceInfo);
+
+        // Log that we are ignoring the callback to satisfy linter (unused variable)
         if (this.connectionRequestCallback) {
-          console.log('[BridgeManager] Using direct callback for connection request');
-          approved = await this.connectionRequestCallback(deviceInfo);
-        } else if (typeof overwolf === 'undefined' || !overwolf.windows) {
-          // Auto-approve in non-Overwolf environment if no callback is set
-          console.log('[BridgeManager] Overwolf not available, auto-approving connection');
-          approved = true;
-        } else {
-          // Send connection request to desktop window via Overwolf messaging
-          approved = await new Promise<boolean>((resolve) => {
-            overwolf.windows.obtainDeclaredWindow('desktop', (result: any) => {
-              if (result.success) {
-                overwolf.windows.sendMessage(result.window.id, 'connection_request', JSON.stringify({
-                  type: 'connection_request',
-                  deviceInfo
-                }), () => {});
-
-                // Listen for response
-                const messageListener = (windowId: any, _messageId: any, message: any) => {
-                  let messageContent: string | null = null;
-                  
-                  if (typeof message === 'string') {
-                    messageContent = message;
-                  } else if (windowId && typeof windowId === 'object' && typeof windowId.content === 'string') {
-                    messageContent = windowId.content;
-                  }
-                  
-                  if (messageContent) {
-                    try {
-                      const data = JSON.parse(messageContent);
-                      if (data.type === 'connection_response' && data.deviceIdentity === deviceInfo.identity) {
-                        overwolf.windows.onMessageReceived.removeListener(messageListener);
-                        resolve(data.approved === true);
-                      }
-                    } catch (error) {
-                      // Ignore parsing errors
-                    }
-                  }
-                };
-
-                overwolf.windows.onMessageReceived.addListener(messageListener);
-
-                // Timeout after 30 seconds
-                setTimeout(() => {
-                  overwolf.windows.onMessageReceived.removeListener(messageListener);
-                  resolve(false);
-                }, 30000);
-              } else {
-                // No desktop window, auto-approve
-                console.log('[BridgeManager] No desktop window found, auto-approving');
-                resolve(true);
-              }
-            });
-          });
+          console.log('[BridgeManager] Ignoring connectionRequestCallback (auto-approve enabled)');
         }
 
-        // If approved, notify status change
-        if (approved) {
-          // Small delay to ensure handler is fully set up
-          setTimeout(() => this.notifyStatusChange(), 100);
-        }
-        
-        return approved;
+        // Small delay to ensure handler is set up before broadcasting status
+        setTimeout(() => this.notifyStatusChange(), 100);
+        return true;
       },
       onStatusRequest: () => {
         // Return current status when mobile requests it
@@ -392,19 +337,19 @@ export class BridgeManager {
         const unsubscribe = this.lcuClient.observe(path, (event) => {
           const handler = this.mobileHandlers.get(uuid);
           if (handler && handler.matchesObservedPath(path)) {
-        handler.encryptMessage([
-          MobileOpcode.UPDATE,
-          path,
-          200,
-          event.data
-        ]).then(encrypted => {
-          this.riftClient?.sendToMobile(uuid, encrypted);
-        }).catch(error => {
-          console.error('[BridgeManager] Failed to encrypt update:', error);
-        });
+            handler.encryptMessage([
+              MobileOpcode.UPDATE,
+              path,
+              200,
+              event.data
+            ]).then(encrypted => {
+              this.riftClient?.sendToMobile(uuid, encrypted);
+            }).catch(error => {
+              console.error('[BridgeManager] Failed to encrypt update:', error);
+            });
           }
         });
-        
+
         // Store unsubscribe function
         const handler = this.mobileHandlers.get(uuid);
         if (handler) {
@@ -527,4 +472,3 @@ export function getBridgeManager(): BridgeManager {
   }
   return bridgeManagerInstance;
 }
-

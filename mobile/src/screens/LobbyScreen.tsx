@@ -60,7 +60,7 @@ export default function LobbyScreen({
     const lcuBridge = getLCUBridge();
     const localMember = lobby?.members?.find((m: any) => m.puuid === lobby?.localMember?.puuid) || lobby?.localMember;
     const isQuickplay = !!(lobby?.gameConfig?.showQuickPlaySlotSelection || [480, 490].includes(lobby?.gameConfig?.queueId));
-    
+
     // Fetch queue information to get shortName
     useEffect(() => {
         const fetchQueueInfo = async () => {
@@ -120,7 +120,7 @@ export default function LobbyScreen({
 
         loadChamps();
     }, []);
-    
+
     // Fetch summoner names for all members
     useEffect(() => {
         const hasMembers = lobby?.members && lobby.members.length > 0;
@@ -156,12 +156,12 @@ export default function LobbyScreen({
                     console.log(`[LobbyScreen] Fetching name for summoner ${summonerId}...`);
                     const result = await lcuBridge.request(`/lol-summoner/v1/summoners/${summonerId}`);
                     console.log(`[LobbyScreen] Response for ${summonerId}:`, result.status, result.content);
-                    
+
                     if (result.status === 200 && result.content) {
-                        const displayName = result.content.displayName || 
-                                         result.content.gameName || 
-                                         result.content.summonerName ||
-                                         result.content.name;
+                        const displayName = result.content.displayName ||
+                            result.content.gameName ||
+                            result.content.summonerName ||
+                            result.content.name;
                         if (displayName) {
                             names[summonerId] = displayName;
                             fetchedIdsRef.current.add(summonerId);
@@ -178,7 +178,7 @@ export default function LobbyScreen({
             });
 
             await Promise.all(fetchPromises);
-            
+
             // Update state with newly fetched names
             if (Object.keys(names).length > 0) {
                 console.log(`[LobbyScreen] Updating state with ${Object.keys(names).length} new names`);
@@ -269,7 +269,7 @@ export default function LobbyScreen({
 
     const getMapName = (mapId: number | null | undefined): string => {
         if (!mapId) return 'Unknown Map';
-        
+
         switch (mapId) {
             case 10:
                 return 'Twisted Treeline';
@@ -291,31 +291,31 @@ export default function LobbyScreen({
         const queueName = queueInfo?.shortName || queueInfo?.description || queueInfo?.name;
         const mapId = lobby?.gameConfig?.mapId;
         const mapName = getMapName(mapId);
-        
+
         // If we have queue name and map, show both
         if (queueName && mapId) {
             return `${queueName} - ${mapName}`;
         }
-        
+
         // If we have queue name, show just that
         if (queueName) {
             return queueName;
         }
-        
+
         // Fallback to gameMode if queue info not available yet
         const gameMode = lobby?.gameConfig?.gameMode;
         if (gameMode && mapId) {
             return `${gameMode} - ${mapName}`;
         }
-        
+
         if (gameMode) {
             return gameMode;
         }
-        
+
         if (mapId) {
             return mapName;
         }
-        
+
         // Final fallback
         return 'Lobby';
     };
@@ -353,6 +353,7 @@ export default function LobbyScreen({
         const updated = updateLanePreference(editingFavorites, activeLane, championId);
         setEditingFavorites(updated);
         onSaveFavoriteConfig(updated);
+        setShowFavoriteGrid(false);
     };
 
     const handleRemoveFavorite = (lane: Lane, championId: number) => {
@@ -461,457 +462,457 @@ export default function LobbyScreen({
         }
     }, [showInviteModal]);
 
-  
+
 
     // Show loading state if lobby is null
     if (!lobby) {
         return (
             <SafeAreaView style={styles.safeArea}>
-            <View style={styles.container}>
-                <View style={styles.header}>
-                    <Text style={styles.title}>Lobby</Text>
-                    <Text style={styles.subtitle}>Loading...</Text>
+                <View style={styles.container}>
+                    <View style={styles.header}>
+                        <Text style={styles.title}>Lobby</Text>
+                        <Text style={styles.subtitle}>Loading...</Text>
+                    </View>
+                    <View style={styles.loadingContainer}>
+                        <Text style={styles.loadingText}>Loading lobby data...</Text>
+                    </View>
                 </View>
-                <View style={styles.loadingContainer}>
-                    <Text style={styles.loadingText}>Loading lobby data...</Text>
-                </View>
-            </View>
             </SafeAreaView>
         );
     }
 
     return (
         <SafeAreaView style={styles.safeArea}>
-        <View style={styles.container}>
-            <View style={styles.header}>
-                <Text style={styles.title}>Lobby</Text>
-                <Text style={styles.subtitle}>{getSubtitle()}</Text>
-                {isQuickplay && <Text style={styles.modeTag}>Quickplay</Text>}
-                {estimatedQueueTime !== null && estimatedQueueTime !== undefined && (
-                    <Text style={styles.estimatedTimeText}>
-                        Tahmini kaç dakikada oyun bulacak: {formatEstimatedTime(estimatedQueueTime)}
-                    </Text>
-                )}
-                <View style={styles.headerStatusRow}>
-                    <Text style={styles.headerStatusText}>Members: {lobby?.members?.length || 0}</Text>
-                    <Text style={styles.headerStatusText}>Queue ID: {lobby?.gameConfig?.queueId || '-'}</Text>
-                </View>
-            </View>
-
-            <ScrollView style={styles.content}>
-                <View style={styles.favoritesCard}>
-                    <View style={styles.favoritesHeader}>
-                        <Text style={styles.cardTitle}>Favorite champions</Text>
-                        <Text style={styles.cardSubtitle}>
-                            Pick per-lane priorities. We will hover them when champ select starts and optionally lock when it's your turn.
+            <View style={styles.container}>
+                <View style={styles.header}>
+                    <Text style={styles.title}>Lobby</Text>
+                    <Text style={styles.subtitle}>{getSubtitle()}</Text>
+                    {isQuickplay && <Text style={styles.modeTag}>Quickplay</Text>}
+                    {estimatedQueueTime !== null && estimatedQueueTime !== undefined && (
+                        <Text style={styles.estimatedTimeText}>
+                            Tahmini kaç dakikada oyun bulacak: {formatEstimatedTime(estimatedQueueTime)}
                         </Text>
-                        <Text style={styles.cardStatus}>{favoritesLoaded ? 'Synced for this device' : 'Loading saved picks...'}</Text>
-                    </View>
-                    <View style={styles.favoritesToggles}>
-                        <View style={styles.toggleRow}>
-                            <View style={styles.toggleTextContainer}>
-                                <Text style={styles.toggleLabel}>Auto hover favorites</Text>
-                                <Text style={styles.toggleSub}>Pre-select your top choice instantly so your team sees your plan.</Text>
-                            </View>
-                            <Switch
-                                value={editingFavorites.autoHover}
-                                onValueChange={(val) => updateFavoriteToggle('autoHover', val)}
-                                trackColor={{ false: '#404040', true: '#22c55e' }}
-                                thumbColor="#ffffff"
-                            />
-                        </View>
-                        <View style={styles.toggleRow}>
-                            <View style={styles.toggleTextContainer}>
-                                <Text style={styles.toggleLabel}>Auto lock on my turn</Text>
-                                <Text style={styles.toggleSub}>Lock your hovered champ the moment your pick action starts.</Text>
-                            </View>
-                            <Switch
-                                value={editingFavorites.autoLock}
-                                onValueChange={(val) => updateFavoriteToggle('autoLock', val)}
-                                trackColor={{ false: '#404040', true: '#4f46e5' }}
-                                thumbColor="#ffffff"
-                            />
-                        </View>
-                        <View style={styles.toggleRow}>
-                            <View style={styles.toggleTextContainer}>
-                                <Text style={styles.toggleLabel}>Fallback to Fill list</Text>
-                                <Text style={styles.toggleSub}>If lane picks are banned or taken, try your Fill picks next.</Text>
-                            </View>
-                            <Switch
-                                value={editingFavorites.allowFillFallback}
-                                onValueChange={(val) => updateFavoriteToggle('allowFillFallback', val)}
-                                trackColor={{ false: '#404040', true: '#22c55e' }}
-                                thumbColor="#ffffff"
-                            />
-                        </View>
-                    </View>
-                    <View style={styles.laneGrid}>
-                        {lanes.map((lane) => {
-                            const lanePrefs = editingFavorites.preferences?.[lane] || [];
-                            return (
-                                <View key={lane} style={styles.laneCard}>
-                                    <View style={styles.laneHeader}>
-                                        <View>
-                                            <Text style={styles.laneLabel}>{laneLabel(lane)}</Text>
-                                            <Text style={styles.laneSubLabel}>Top 3 choices</Text>
-                                        </View>
-                                        <Button
-                                            title={lanePrefs.length ? 'Edit' : 'Add'}
-                                            type="outline"
-                                            buttonStyle={styles.laneEditButton}
-                                            titleStyle={styles.laneEditTitle}
-                                            onPress={() => openFavoritesForLane(lane)}
-                                        />
-                                    </View>
-                                    <View style={styles.favoriteRow}>
-                                        {lanePrefs.length === 0 ? (
-                                            <Text style={styles.emptyFavoriteText}>No champions yet</Text>
-                                        ) : (
-                                            lanePrefs.map((id) => {
-                                                const champ = championMap[id];
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={`${lane}-${id}`}
-                                                        style={styles.favoritePill}
-                                                        onPress={() => handleRemoveFavorite(lane, id)}
-                                                    >
-                                                        {champ?.image?.full ? (
-                                                            <Image
-                                                                source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champ.image.full}` }}
-                                                                style={styles.favoriteImage}
-                                                            />
-                                                        ) : (
-                                                            <View style={[styles.favoriteImage, styles.favoriteImagePlaceholder]} />
-                                                        )}
-                                                        <Text style={styles.favoriteName} numberOfLines={1}>
-                                                            {champ?.name || `#${id}`}
-                                                        </Text>
-                                                        <Text style={styles.removeHint}>x</Text>
-                                                    </TouchableOpacity>
-                                                );
-                                            })
-                                        )}
-                                    </View>
-                                </View>
-                            );
-                        })}
+                    )}
+                    <View style={styles.headerStatusRow}>
+                        <Text style={styles.headerStatusText}>Members: {lobby?.members?.length || 0}</Text>
+                        <Text style={styles.headerStatusText}>Queue ID: {lobby?.gameConfig?.queueId || '-'}</Text>
                     </View>
                 </View>
 
-                {/* Quickplay Setup */}
-                {isQuickplay ? (
-                    <QuickplaySetup 
-                        lobby={lobby} 
-                        onReady={() => { }} 
-                        onError={onError}
-                        onSuccess={onSuccess}
-                    />
-                ) : (
-                    /* Standard Member List */
-                    <View style={styles.membersContainer}>
-                        {!lobby.members || lobby.members.length === 0 ? (
-                            <View style={styles.emptyStateContainer}>
-                                <Text style={styles.emptyStateText}>No members in lobby</Text>
-                                <Text style={styles.emptyStateSubtext}>Waiting for players to join...</Text>
-                            </View>
-                        ) : (
-                            lobby.members.map((member: any, index: number) => {
-                            // Get member name from fetched names or fallback to member properties
-                            // Check if we're still fetching (not in fetchedIdsRef means we haven't tried yet or it failed)
-                            const isFetching = member.summonerId && !fetchedIdsRef.current.has(member.summonerId) && !memberNames[member.summonerId];
-                            const memberName = memberNames[member.summonerId] || 
-                                             member.summonerName || 
-                                             member.displayName || 
-                                             member.gameName || 
-                                             member.name || 
-                                             (isFetching ? 'Loading...' : 'Unknown Player');
-                            
-                            // Get profile icon ID
-                            const profileIconId = member.summonerIconId || 
-                                                member.profileIconId || 
-                                                member.icon || 
-                                                29; // Default icon
-                            
-                            const isLeader = member.isLeader || false;
-                            const isLocalPlayer = member.puuid === localMember?.puuid;
-                            
-                            return (
-                                <View key={index} style={styles.memberRow}>
-                                    <View style={styles.memberInfo}>
-                                        <View style={styles.profileIconContainer}>
-                                            <Image
-                                                source={{ uri: `https://ddragon.leagueoflegends.com/cdn/14.23.1/img/profileicon/${profileIconId}.png` }}
-                                                style={styles.profileIcon}
-                                            />
-                                            {isLeader && (
-                                                <View style={styles.leaderBadge}>
-                                                    <Text style={styles.leaderBadgeText}>👑</Text>
-                                                </View>
-                                            )}
-                                        </View>
-                                        <View style={styles.memberTextContainer}>
-                                            {isFetching ? (
-                                                <View style={styles.skeletonName} />
-                                            ) : (
-                                                <Text style={styles.memberName}>
-                                                    {memberName}
-                                                </Text>
-                                            )}
-                                            <View style={styles.memberChipsRow}>
-                                                {isLeader && <Text style={styles.leaderChip}>Group Leader</Text>}
-                                                {isLocalPlayer && <Text style={styles.localPlayerTag}>you</Text>}
-                                            </View>
-                                        </View>
-                                    </View>
-
-                                    <View style={styles.actionsRow}>
-                                        {/* Role Selection (Only for local member in Draft modes) */}
-                                        {isLocalPlayer && lobby?.gameConfig?.showPositionSelector && (
-                                            <View style={styles.roleContainer}>
-                                                <TouchableOpacity onPress={() => openRolePicker(true)} style={styles.roleButton}>
-                                                    <Text style={styles.roleText}>{member.firstPositionPreference || 'FILL'}</Text>
-                                                </TouchableOpacity>
-                                                <TouchableOpacity onPress={() => openRolePicker(false)} style={styles.roleButton}>
-                                                    <Text style={styles.roleText}>{member.secondPositionPreference || 'FILL'}</Text>
-                                                </TouchableOpacity>
-                                            </View>
-                                        )}
-
-                                        {localMember?.isLeader && !isLocalPlayer && (
-                                            <View style={styles.memberActions}>
-                                                    <Button
-                                                        title="Promote"
-                                                        type="outline"
-                                                        onPress={async () => {
-                                                            try {
-                                                                await lcuBridge.request(`/lol-lobby/v2/lobby/members/${member.summonerId}/promote`, 'POST');
-                                                            } catch (err: any) {
-                                                                console.error('Failed to promote', err?.message);
-                                                            }
-                                                        }}
-                                                        buttonStyle={styles.smallOutline}
-                                                        titleStyle={styles.actionTitle}
-                                                        containerStyle={styles.actionContainer}
-                                                    />
-                                                    <Button
-                                                        title="Kick"
-                                                        type="outline"
-                                                        onPress={async () => {
-                                                            try {
-                                                                await lcuBridge.request(`/lol-lobby/v2/lobby/members/${member.summonerId}/kick`, 'POST');
-                                                            } catch (err: any) {
-                                                                console.error('Failed to kick', err?.message);
-                                                            }
-                                                        }}
-                                                        buttonStyle={styles.smallDanger}
-                                                        titleStyle={styles.actionTitle}
-                                                        containerStyle={styles.actionContainer}
-                                                />
-                                            </View>
-                                        )}
-                                    </View>
-                                </View>
-                            );
-                        })
-                        )}
-                    </View>
-                )}
-
-                <View style={styles.inviteButtonRow}>
-                    <Button
-                        title="Invite friends"
-                        onPress={() => setShowInviteModal(true)}
-                        buttonStyle={styles.primaryButton}
-                        containerStyle={{ width: '100%' }}
-                    />
-                </View>
-            </ScrollView>
-
-            <View style={styles.footer}>
-                {onOpenCreateLobby && (
-                    <Button
-                        title="Switch Lobby Mode"
-                        onPress={() => {
-                            if (onOpenCreateLobby) onOpenCreateLobby();
-                        }}
-                        buttonStyle={styles.secondaryButton}
-                        containerStyle={styles.buttonContainer}
-                        type="outline"
-                    />
-                )}
-                <Button
-                    title="Find Match"
-                    onPress={onEnterQueue}
-                    buttonStyle={styles.queueButton}
-                    containerStyle={styles.buttonContainer}
-                    disabled={!lobby?.canStartActivity}
-                />
-                <Button
-                    title="Leave Lobby"
-                    onPress={onLeaveLobby}
-                    buttonStyle={styles.leaveButton}
-                    containerStyle={styles.buttonContainer}
-                />
-            </View>
-
-            <RolePicker
-                visible={showRolePicker}
-                onSelect={handleRoleSelect}
-                onClose={() => setShowRolePicker(false)}
-                currentRole={pickingFirstRole ? localMember?.firstPositionPreference : localMember?.secondPositionPreference}
-            />
-            <Modal
-                visible={showFavoriteGrid}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setShowFavoriteGrid(false)}
-            >
-                <View style={styles.modalRoot} pointerEvents="box-none">
-                    <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowFavoriteGrid(false)} />
-                    <View style={[styles.modalCard, styles.favoritesModalCard]}>
-                        <View style={styles.modalHeader}>
-                            <Text style={styles.modalTitle}>
-                                {activeLane ? `Select favorites • ${laneLabel(activeLane)}` : 'Select favorites'}
+                <ScrollView style={styles.content}>
+                    <View style={styles.favoritesCard}>
+                        <View style={styles.favoritesHeader}>
+                            <Text style={styles.cardTitle}>Favorite champions</Text>
+                            <Text style={styles.cardSubtitle}>
+                                Pick per-lane priorities. We will hover them when champ select starts and optionally lock when it's your turn.
                             </Text>
-                            <Button
-                                title="Done"
-                                type="clear"
-                                titleStyle={styles.modalClose}
-                                onPress={() => setShowFavoriteGrid(false)}
-                            />
+                            <Text style={styles.cardStatus}>{favoritesLoaded ? 'Synced for this device' : 'Loading saved picks...'}</Text>
                         </View>
-                        {loadingChamps ? (
-                            <View style={styles.modalLoading}>
-                                <ActivityIndicator size="large" color="#4f46e5" />
-                                <Text style={styles.modalLoadingText}>Loading champions...</Text>
+                        <View style={styles.favoritesToggles}>
+                            <View style={styles.toggleRow}>
+                                <View style={styles.toggleTextContainer}>
+                                    <Text style={styles.toggleLabel}>Auto hover favorites</Text>
+                                    <Text style={styles.toggleSub}>Pre-select your top choice instantly so your team sees your plan.</Text>
+                                </View>
+                                <Switch
+                                    value={editingFavorites.autoHover}
+                                    onValueChange={(val) => updateFavoriteToggle('autoHover', val)}
+                                    trackColor={{ false: '#404040', true: '#22c55e' }}
+                                    thumbColor="#ffffff"
+                                />
                             </View>
-                        ) : (
-                            <ChampionGrid
-                                champions={champions}
-                                onSelect={handleFavoriteSelect}
-                                version={ddragonVersion}
-                            />
-                        )}
-                    </View>
-                </View>
-            </Modal>
-            <Modal
-                visible={showInviteModal}
-                animationType="slide"
-                transparent
-                onRequestClose={closeInviteModal}
-            >
-                <View style={styles.modalRoot} pointerEvents="box-none">
-                    <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeInviteModal} />
-                    <View style={styles.modalCard}>
-                        <View style={styles.modalHeader}>
-                            <Text style={styles.modalTitle}>Invite friends</Text>
-                            <Button
-                                title="Close"
-                                type="clear"
-                                titleStyle={styles.modalClose}
-                                onPress={closeInviteModal}
-                            />
+                            <View style={styles.toggleRow}>
+                                <View style={styles.toggleTextContainer}>
+                                    <Text style={styles.toggleLabel}>Auto lock on my turn</Text>
+                                    <Text style={styles.toggleSub}>Lock your hovered champ the moment your pick action starts.</Text>
+                                </View>
+                                <Switch
+                                    value={editingFavorites.autoLock}
+                                    onValueChange={(val) => updateFavoriteToggle('autoLock', val)}
+                                    trackColor={{ false: '#404040', true: '#4f46e5' }}
+                                    thumbColor="#ffffff"
+                                />
+                            </View>
+                            <View style={styles.toggleRow}>
+                                <View style={styles.toggleTextContainer}>
+                                    <Text style={styles.toggleLabel}>Fallback to Fill list</Text>
+                                    <Text style={styles.toggleSub}>If lane picks are banned or taken, try your Fill picks next.</Text>
+                                </View>
+                                <Switch
+                                    value={editingFavorites.allowFillFallback}
+                                    onValueChange={(val) => updateFavoriteToggle('allowFillFallback', val)}
+                                    trackColor={{ false: '#404040', true: '#22c55e' }}
+                                    thumbColor="#ffffff"
+                                />
+                            </View>
                         </View>
-                        {loadingFriends ? (
-                            <View style={styles.modalLoading}>
-                                <ActivityIndicator size="large" color="#4f46e5" />
-                                <Text style={styles.modalLoadingText}>Loading friends...</Text>
-                            </View>
-                        ) : friends.length === 0 ? (
-                            <View style={styles.modalLoading}>
-                                <Text style={styles.modalLoadingText}>No friends found.</Text>
-                                <Button title="Refresh" onPress={loadFriends} type="outline" />
-                            </View>
-                        ) : (
-                            <>
-                                <View style={styles.searchRow}>
-                                    <View style={styles.searchInputWrapper}>
-                                        <TextInput
-                                            value={friendSearch}
-                                            onChangeText={setFriendSearch}
-                                            placeholder="Search friends..."
-                                            placeholderTextColor="#6b7280"
-                                            style={styles.searchInput}
-                                        />
-                                    </View>
-                                    <View style={styles.filterButtonsCompact}>
-                                        <Button
-                                            title="All"
-                                            type={availabilityFilter === 'all' ? 'solid' : 'outline'}
-                                            onPress={() => setAvailabilityFilter('all')}
-                                            buttonStyle={availabilityFilter === 'all' ? styles.modeButtonActive : styles.modeButton}
-                                            titleStyle={styles.modeButtonTitle}
-                                            containerStyle={styles.filterButtonContainer}
-                                        />
-                                        <Button
-                                            title="Online"
-                                            type={availabilityFilter === 'online' ? 'solid' : 'outline'}
-                                            onPress={() => setAvailabilityFilter('online')}
-                                            buttonStyle={availabilityFilter === 'online' ? styles.modeButtonActive : styles.modeButton}
-                                            titleStyle={styles.modeButtonTitle}
-                                            containerStyle={styles.filterButtonContainer}
-                                        />
-                                    </View>
-                                </View>
-
-                                <View style={styles.inviteSummaryRow}>
-                                    <Text style={styles.inviteSummaryText}>Pending: {pendingInvites}</Text>
-                                    <Text style={styles.inviteSummaryText}>Accepted: {acceptedInvites}</Text>
-                                    <Text style={styles.inviteSummaryText}>Declined: {declinedInvites}</Text>
-                                </View>
-
-                                <ScrollView style={styles.friendList}>
-                                    {(filteredFriends.length ? filteredFriends : friends).map((friend: any) => {
-                                        const name = renderFriendName(friend);
-                                        const status = renderFriendStatus(friend);
-                                        const existing = combinedInvites.find((inv) => inv.toSummonerId === friend.summonerId);
-                                        const isPending = existing?.state === 'Pending';
-                                        const disabled = !!invitingId || !friend.summonerId || isPending;
-                                        return (
-                                            <View key={friend.puuid || friend.id || name} style={styles.friendRow}>
-                                                <View>
-                                                    <Text style={styles.friendName}>{name}</Text>
-                                                    <Text style={styles.friendStatus}>
-                                                        <Text style={{ color: availabilityColor(friend.availability) }}>● </Text>
-                                                        {status}
-                                                    </Text>
-                                                </View>
-                                                <Button
-                                                    title={
-                                                        isPending
-                                                            ? 'Invited'
-                                                            : invitingId === friend.summonerId
-                                                            ? 'Inviting...'
-                                                            : 'Invite'
-                                                    }
-                                                    onPress={() => sendInvite(friend.summonerId)}
-                                                    disabled={disabled}
-                                                    buttonStyle={styles.inviteAction}
-                                                    containerStyle={styles.inviteActionContainer}
-                                                />
+                        <View style={styles.laneGrid}>
+                            {lanes.map((lane) => {
+                                const lanePrefs = editingFavorites.preferences?.[lane] || [];
+                                return (
+                                    <View key={lane} style={styles.laneCard}>
+                                        <View style={styles.laneHeader}>
+                                            <View>
+                                                <Text style={styles.laneLabel}>{laneLabel(lane)}</Text>
+                                                <Text style={styles.laneSubLabel}>Top 3 choices</Text>
                                             </View>
-                                        );
-                                    })}
-                                </ScrollView>
-                            </>
-                        )}
-
-                        {combinedInvites.length > 0 && (
-                            <View style={styles.invitationList}>
-                                <Text style={styles.sectionSubtitle}>Sent invites</Text>
-                                {combinedInvites.map((invite: any, idx: number) => (
-                                    <View key={invite.invitationId || invite.id || invite.toSummonerId || idx} style={styles.invitationRow}>
-                                        <Text style={styles.invitationName}>{memberNames[invite.toSummonerId] || 'Unknown player'}</Text>
-                                        <Text style={styles.inviteStatus}>{renderInviteState(invite.state)}</Text>
+                                            <Button
+                                                title={lanePrefs.length ? 'Edit' : 'Add'}
+                                                type="outline"
+                                                buttonStyle={styles.laneEditButton}
+                                                titleStyle={styles.laneEditTitle}
+                                                onPress={() => openFavoritesForLane(lane)}
+                                            />
+                                        </View>
+                                        <View style={styles.favoriteRow}>
+                                            {lanePrefs.length === 0 ? (
+                                                <Text style={styles.emptyFavoriteText}>No champions yet</Text>
+                                            ) : (
+                                                lanePrefs.map((id) => {
+                                                    const champ = championMap[id];
+                                                    return (
+                                                        <TouchableOpacity
+                                                            key={`${lane}-${id}`}
+                                                            style={styles.favoritePill}
+                                                            onPress={() => handleRemoveFavorite(lane, id)}
+                                                        >
+                                                            {champ?.image?.full ? (
+                                                                <Image
+                                                                    source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champ.image.full}` }}
+                                                                    style={styles.favoriteImage}
+                                                                />
+                                                            ) : (
+                                                                <View style={[styles.favoriteImage, styles.favoriteImagePlaceholder]} />
+                                                            )}
+                                                            <Text style={styles.favoriteName} numberOfLines={1}>
+                                                                {champ?.name || `#${id}`}
+                                                            </Text>
+                                                            <Text style={styles.removeHint}>x</Text>
+                                                        </TouchableOpacity>
+                                                    );
+                                                })
+                                            )}
+                                        </View>
                                     </View>
-                                ))}
-                            </View>
-                        )}
+                                );
+                            })}
+                        </View>
                     </View>
+
+                    {/* Quickplay Setup */}
+                    {isQuickplay ? (
+                        <QuickplaySetup
+                            lobby={lobby}
+                            onReady={() => { }}
+                            onError={onError}
+                            onSuccess={onSuccess}
+                        />
+                    ) : (
+                        /* Standard Member List */
+                        <View style={styles.membersContainer}>
+                            {!lobby.members || lobby.members.length === 0 ? (
+                                <View style={styles.emptyStateContainer}>
+                                    <Text style={styles.emptyStateText}>No members in lobby</Text>
+                                    <Text style={styles.emptyStateSubtext}>Waiting for players to join...</Text>
+                                </View>
+                            ) : (
+                                lobby.members.map((member: any, index: number) => {
+                                    // Get member name from fetched names or fallback to member properties
+                                    // Check if we're still fetching (not in fetchedIdsRef means we haven't tried yet or it failed)
+                                    const isFetching = member.summonerId && !fetchedIdsRef.current.has(member.summonerId) && !memberNames[member.summonerId];
+                                    const memberName = memberNames[member.summonerId] ||
+                                        member.summonerName ||
+                                        member.displayName ||
+                                        member.gameName ||
+                                        member.name ||
+                                        (isFetching ? 'Loading...' : 'Unknown Player');
+
+                                    // Get profile icon ID
+                                    const profileIconId = member.summonerIconId ||
+                                        member.profileIconId ||
+                                        member.icon ||
+                                        29; // Default icon
+
+                                    const isLeader = member.isLeader || false;
+                                    const isLocalPlayer = member.puuid === localMember?.puuid;
+
+                                    return (
+                                        <View key={index} style={styles.memberRow}>
+                                            <View style={styles.memberInfo}>
+                                                <View style={styles.profileIconContainer}>
+                                                    <Image
+                                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/14.23.1/img/profileicon/${profileIconId}.png` }}
+                                                        style={styles.profileIcon}
+                                                    />
+                                                    {isLeader && (
+                                                        <View style={styles.leaderBadge}>
+                                                            <Text style={styles.leaderBadgeText}>👑</Text>
+                                                        </View>
+                                                    )}
+                                                </View>
+                                                <View style={styles.memberTextContainer}>
+                                                    {isFetching ? (
+                                                        <View style={styles.skeletonName} />
+                                                    ) : (
+                                                        <Text style={styles.memberName}>
+                                                            {memberName}
+                                                        </Text>
+                                                    )}
+                                                    <View style={styles.memberChipsRow}>
+                                                        {isLeader && <Text style={styles.leaderChip}>Group Leader</Text>}
+                                                        {isLocalPlayer && <Text style={styles.localPlayerTag}>you</Text>}
+                                                    </View>
+                                                </View>
+                                            </View>
+
+                                            <View style={styles.actionsRow}>
+                                                {/* Role Selection (Only for local member in Draft modes) */}
+                                                {isLocalPlayer && lobby?.gameConfig?.showPositionSelector && (
+                                                    <View style={styles.roleContainer}>
+                                                        <TouchableOpacity onPress={() => openRolePicker(true)} style={styles.roleButton}>
+                                                            <Text style={styles.roleText}>{member.firstPositionPreference || 'FILL'}</Text>
+                                                        </TouchableOpacity>
+                                                        <TouchableOpacity onPress={() => openRolePicker(false)} style={styles.roleButton}>
+                                                            <Text style={styles.roleText}>{member.secondPositionPreference || 'FILL'}</Text>
+                                                        </TouchableOpacity>
+                                                    </View>
+                                                )}
+
+                                                {localMember?.isLeader && !isLocalPlayer && (
+                                                    <View style={styles.memberActions}>
+                                                        <Button
+                                                            title="Promote"
+                                                            type="outline"
+                                                            onPress={async () => {
+                                                                try {
+                                                                    await lcuBridge.request(`/lol-lobby/v2/lobby/members/${member.summonerId}/promote`, 'POST');
+                                                                } catch (err: any) {
+                                                                    console.error('Failed to promote', err?.message);
+                                                                }
+                                                            }}
+                                                            buttonStyle={styles.smallOutline}
+                                                            titleStyle={styles.actionTitle}
+                                                            containerStyle={styles.actionContainer}
+                                                        />
+                                                        <Button
+                                                            title="Kick"
+                                                            type="outline"
+                                                            onPress={async () => {
+                                                                try {
+                                                                    await lcuBridge.request(`/lol-lobby/v2/lobby/members/${member.summonerId}/kick`, 'POST');
+                                                                } catch (err: any) {
+                                                                    console.error('Failed to kick', err?.message);
+                                                                }
+                                                            }}
+                                                            buttonStyle={styles.smallDanger}
+                                                            titleStyle={styles.actionTitle}
+                                                            containerStyle={styles.actionContainer}
+                                                        />
+                                                    </View>
+                                                )}
+                                            </View>
+                                        </View>
+                                    );
+                                })
+                            )}
+                        </View>
+                    )}
+
+                    <View style={styles.inviteButtonRow}>
+                        <Button
+                            title="Invite friends"
+                            onPress={() => setShowInviteModal(true)}
+                            buttonStyle={styles.primaryButton}
+                            containerStyle={{ width: '100%' }}
+                        />
+                    </View>
+                </ScrollView>
+
+                <View style={styles.footer}>
+                    {onOpenCreateLobby && (
+                        <Button
+                            title="Switch Lobby Mode"
+                            onPress={() => {
+                                if (onOpenCreateLobby) onOpenCreateLobby();
+                            }}
+                            buttonStyle={styles.secondaryButton}
+                            containerStyle={styles.buttonContainer}
+                            type="outline"
+                        />
+                    )}
+                    <Button
+                        title="Find Match"
+                        onPress={onEnterQueue}
+                        buttonStyle={styles.queueButton}
+                        containerStyle={styles.buttonContainer}
+                        disabled={!lobby?.canStartActivity}
+                    />
+                    <Button
+                        title="Leave Lobby"
+                        onPress={onLeaveLobby}
+                        buttonStyle={styles.leaveButton}
+                        containerStyle={styles.buttonContainer}
+                    />
                 </View>
-            </Modal>
-        </View>
+
+                <RolePicker
+                    visible={showRolePicker}
+                    onSelect={handleRoleSelect}
+                    onClose={() => setShowRolePicker(false)}
+                    currentRole={pickingFirstRole ? localMember?.firstPositionPreference : localMember?.secondPositionPreference}
+                />
+                <Modal
+                    visible={showFavoriteGrid}
+                    animationType="slide"
+                    transparent
+                    onRequestClose={() => setShowFavoriteGrid(false)}
+                >
+                    <View style={styles.modalRoot} pointerEvents="box-none">
+                        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowFavoriteGrid(false)} />
+                        <View style={[styles.modalCard, styles.favoritesModalCard]}>
+                            <View style={styles.modalHeader}>
+                                <Text style={styles.modalTitle}>
+                                    {activeLane ? `Select favorites • ${laneLabel(activeLane)}` : 'Select favorites'}
+                                </Text>
+                                <Button
+                                    title="Done"
+                                    type="clear"
+                                    titleStyle={styles.modalClose}
+                                    onPress={() => setShowFavoriteGrid(false)}
+                                />
+                            </View>
+                            {loadingChamps ? (
+                                <View style={styles.modalLoading}>
+                                    <ActivityIndicator size="large" color="#4f46e5" />
+                                    <Text style={styles.modalLoadingText}>Loading champions...</Text>
+                                </View>
+                            ) : (
+                                <ChampionGrid
+                                    champions={champions}
+                                    onSelect={handleFavoriteSelect}
+                                    version={ddragonVersion}
+                                />
+                            )}
+                        </View>
+                    </View>
+                </Modal>
+                <Modal
+                    visible={showInviteModal}
+                    animationType="slide"
+                    transparent
+                    onRequestClose={closeInviteModal}
+                >
+                    <View style={styles.modalRoot} pointerEvents="box-none">
+                        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeInviteModal} />
+                        <View style={styles.modalCard}>
+                            <View style={styles.modalHeader}>
+                                <Text style={styles.modalTitle}>Invite friends</Text>
+                                <Button
+                                    title="Close"
+                                    type="clear"
+                                    titleStyle={styles.modalClose}
+                                    onPress={closeInviteModal}
+                                />
+                            </View>
+                            {loadingFriends ? (
+                                <View style={styles.modalLoading}>
+                                    <ActivityIndicator size="large" color="#4f46e5" />
+                                    <Text style={styles.modalLoadingText}>Loading friends...</Text>
+                                </View>
+                            ) : friends.length === 0 ? (
+                                <View style={styles.modalLoading}>
+                                    <Text style={styles.modalLoadingText}>No friends found.</Text>
+                                    <Button title="Refresh" onPress={loadFriends} type="outline" />
+                                </View>
+                            ) : (
+                                <>
+                                    <View style={styles.searchRow}>
+                                        <View style={styles.searchInputWrapper}>
+                                            <TextInput
+                                                value={friendSearch}
+                                                onChangeText={setFriendSearch}
+                                                placeholder="Search friends..."
+                                                placeholderTextColor="#6b7280"
+                                                style={styles.searchInput}
+                                            />
+                                        </View>
+                                        <View style={styles.filterButtonsCompact}>
+                                            <Button
+                                                title="All"
+                                                type={availabilityFilter === 'all' ? 'solid' : 'outline'}
+                                                onPress={() => setAvailabilityFilter('all')}
+                                                buttonStyle={availabilityFilter === 'all' ? styles.modeButtonActive : styles.modeButton}
+                                                titleStyle={styles.modeButtonTitle}
+                                                containerStyle={styles.filterButtonContainer}
+                                            />
+                                            <Button
+                                                title="Online"
+                                                type={availabilityFilter === 'online' ? 'solid' : 'outline'}
+                                                onPress={() => setAvailabilityFilter('online')}
+                                                buttonStyle={availabilityFilter === 'online' ? styles.modeButtonActive : styles.modeButton}
+                                                titleStyle={styles.modeButtonTitle}
+                                                containerStyle={styles.filterButtonContainer}
+                                            />
+                                        </View>
+                                    </View>
+
+                                    <View style={styles.inviteSummaryRow}>
+                                        <Text style={styles.inviteSummaryText}>Pending: {pendingInvites}</Text>
+                                        <Text style={styles.inviteSummaryText}>Accepted: {acceptedInvites}</Text>
+                                        <Text style={styles.inviteSummaryText}>Declined: {declinedInvites}</Text>
+                                    </View>
+
+                                    <ScrollView style={styles.friendList}>
+                                        {(filteredFriends.length ? filteredFriends : friends).map((friend: any) => {
+                                            const name = renderFriendName(friend);
+                                            const status = renderFriendStatus(friend);
+                                            const existing = combinedInvites.find((inv) => inv.toSummonerId === friend.summonerId);
+                                            const isPending = existing?.state === 'Pending';
+                                            const disabled = !!invitingId || !friend.summonerId || isPending;
+                                            return (
+                                                <View key={friend.puuid || friend.id || name} style={styles.friendRow}>
+                                                    <View>
+                                                        <Text style={styles.friendName}>{name}</Text>
+                                                        <Text style={styles.friendStatus}>
+                                                            <Text style={{ color: availabilityColor(friend.availability) }}>● </Text>
+                                                            {status}
+                                                        </Text>
+                                                    </View>
+                                                    <Button
+                                                        title={
+                                                            isPending
+                                                                ? 'Invited'
+                                                                : invitingId === friend.summonerId
+                                                                    ? 'Inviting...'
+                                                                    : 'Invite'
+                                                        }
+                                                        onPress={() => sendInvite(friend.summonerId)}
+                                                        disabled={disabled}
+                                                        buttonStyle={styles.inviteAction}
+                                                        containerStyle={styles.inviteActionContainer}
+                                                    />
+                                                </View>
+                                            );
+                                        })}
+                                    </ScrollView>
+                                </>
+                            )}
+
+                            {combinedInvites.length > 0 && (
+                                <View style={styles.invitationList}>
+                                    <Text style={styles.sectionSubtitle}>Sent invites</Text>
+                                    {combinedInvites.map((invite: any, idx: number) => (
+                                        <View key={invite.invitationId || invite.id || invite.toSummonerId || idx} style={styles.invitationRow}>
+                                            <Text style={styles.invitationName}>{memberNames[invite.toSummonerId] || 'Unknown player'}</Text>
+                                            <Text style={styles.inviteStatus}>{renderInviteState(invite.state)}</Text>
+                                        </View>
+                                    ))}
+                                </View>
+                            )}
+                        </View>
+                    </View>
+                </Modal>
+            </View>
         </SafeAreaView>
     );
 }
@@ -1111,7 +1112,7 @@ const styles = StyleSheet.create({
         padding: 16,
     },
     favoritesModalCard: {
-        maxHeight: '85%',
+        height: '90%',
         paddingBottom: 8,
     },
     modalHeader: {

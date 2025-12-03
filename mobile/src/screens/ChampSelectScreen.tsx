@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, Modal, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, Tab, TabView, Avatar } from '@rneui/themed';
+import { Button, Tab, TabView } from '@rneui/themed';
 import { getLCUBridge } from '../lib/lcuBridge';
 import ChampionGrid from '../components/ChampionGrid';
 import TeamView from '../components/TeamView';
 import SpellPicker from '../components/SpellPicker';
 import SkinPicker from '../components/SkinPicker';
 import RunePicker from '../components/RunePicker';
+import CustomModal from '../components/CustomModal';
 
 interface ChampSelectScreenProps {
     champSelect: any;
@@ -25,10 +26,18 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const [perkStyles, setPerkStyles] = useState<any[]>([]);
     const [runeIconMap, setRuneIconMap] = useState<Record<number, string>>({});
     const [spells, setSpells] = useState<any[]>([]);
-    const [bench, setBench] = useState<any[]>([]);
-    const [rerollState, setRerollState] = useState<any>(null);
+    const [pickableChampionIds, setPickableChampionIds] = useState<number[]>(
+        () => Array.isArray(champSelect?.pickableChampionIds) ? champSelect.pickableChampionIds : []
+    );
+    const [benchChampionIds, setBenchChampionIds] = useState<number[]>(
+        () => Array.isArray(champSelect?.benchChampionIds) ? champSelect.benchChampionIds : []
+    );
+    const [loadingPickablePool, setLoadingPickablePool] = useState(false);
+    const [loadingBench, setLoadingBench] = useState(false);
     const [ddragonVersion, setDdragonVersion] = useState('14.23.1');
-    const [loading, setLoading] = useState(true);
+    const [loadingResources, setLoadingResources] = useState(true);
+    const spellMapRef = React.useRef<Record<number, string>>({});
+    const [waitModalVisible, setWaitModalVisible] = useState(false);
     const [selectionMode, setSelectionMode] = useState<'pick' | 'ban'>('pick');
     const [confirmModal, setConfirmModal] = useState<{ visible: boolean; championId: number | null; action: 'pick' | 'ban' }>({ visible: false, championId: null, action: 'pick' });
     const [timeLeft, setTimeLeft] = useState<number>(() => champSelect?.timer?.adjustedTimeLeftInPhase ? Math.ceil(champSelect.timer.adjustedTimeLeftInPhase / 1000) : 0);
@@ -63,7 +72,10 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const theirTeam = champSelect?.theirTeam || [];
     const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
     const hasPickedChampion = !!(localPlayer?.championId && localPlayer.championId > 0);
-    const isARAM = champSelect?.benchEnabled;
+    const normalizedGameMode = (champSelect?.gameMode || '').toUpperCase();
+    const isARAM = normalizedGameMode === 'ARAM' || normalizedGameMode === 'KIWI' || champSelect?.benchEnabled || champSelect?.mapId === 12;
+    const showBench = champSelect?.benchEnabled || normalizedGameMode === 'KIWI';
+
     const currentAction = useMemo(() => {
         const actions = champSelect?.actions || [];
         for (const turn of actions) {
@@ -75,6 +87,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         }
         return null;
     }, [champSelect?.actions, localPlayerCellId]);
+
     useEffect(() => {
         if (currentAction?.type) {
             setSelectionMode(currentAction.type.toLowerCase() === 'ban' ? 'ban' : 'pick');
@@ -108,6 +121,131 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         }
     }, [isARAM, champSelect?.benchChampionIds]);
 
+    const normalizeBenchPayload = useCallback((payload: any): number[] => {
+        const ids: number[] = [];
+        const addId = (champId: any) => {
+            const parsed = typeof champId === 'number' ? champId : parseInt(champId, 10);
+            if (!Number.isFinite(parsed) || parsed <= 0) return;
+            ids.push(parsed);
+        };
+        const tryArray = (arr?: any[]) => {
+            if (!Array.isArray(arr)) return;
+            arr.forEach((entry: any) => {
+                if (typeof entry === 'number' || typeof entry === 'string') {
+                    addId(entry);
+                } else if (entry && typeof entry === 'object') {
+                    addId(entry.championId ?? entry.id ?? entry.championID);
+                }
+            });
+        };
+
+        if (!payload) return [];
+
+        if (Array.isArray(payload)) {
+            tryArray(payload);
+        } else if (typeof payload === 'object') {
+            tryArray(payload.benchChampionIds);
+            tryArray(payload.benchChampions);
+            tryArray(payload.champions);
+            tryArray(payload.championIds);
+        }
+
+        return Array.from(new Set(ids));
+    }, []);
+
+    // Keep pickable champion IDs in sync and fall back to LCU endpoint when not present in session payload
+    useEffect(() => {
+        let cancelled = false;
+        const inlinePickable = Array.isArray(champSelect?.pickableChampionIds)
+            ? champSelect.pickableChampionIds.filter((id: any) => typeof id === 'number' && id > 0)
+            : [];
+
+        if (inlinePickable.length > 0) {
+            setPickableChampionIds(Array.from(new Set(inlinePickable)));
+            setLoadingPickablePool(false);
+            return () => { cancelled = true; };
+        } else {
+            setPickableChampionIds([]);
+        }
+
+        if (!isARAM) {
+            setLoadingPickablePool(false);
+            return () => { cancelled = true; };
+        }
+
+        setLoadingPickablePool(true);
+        let polling = true;
+
+        const poll = async () => {
+            while (!cancelled && polling) {
+                try {
+                    const result = await lcuBridge.request('/lol-champ-select/v1/pickable-champion-ids');
+                    if (!cancelled && result.status === 200 && Array.isArray(result.content)) {
+                        const filtered = result.content.filter((id: any) => typeof id === 'number' && id > 0);
+                        if (filtered.length > 0) {
+                            setPickableChampionIds(Array.from(new Set(filtered)));
+                            setLoadingPickablePool(false);
+                            polling = false;
+                            return;
+                        }
+                    }
+                } catch (error) {
+                    if (!cancelled) {
+                        console.warn('[ChampSelect] Failed to fetch pickable champion ids', error);
+                    }
+                }
+                await new Promise(resolve => setTimeout(resolve, 800));
+            }
+        };
+
+        poll();
+        return () => { cancelled = true; polling = false; };
+    }, [champSelect?.pickableChampionIds, isARAM, lcuBridge]);
+
+    // Keep bench champions in sync, pulling from dedicated bench endpoint when session payload omits them
+    useEffect(() => {
+        let cancelled = false;
+        const applyBench = (payload: any) => {
+            const parsed = normalizeBenchPayload(payload);
+            if (parsed.length > 0 || payload?.benchChampionIds !== undefined || payload?.benchChampions !== undefined) {
+                setBenchChampionIds(parsed);
+            }
+        };
+
+        // First, trust the session payload if it contains bench info
+        applyBench({
+            benchChampionIds: champSelect?.benchChampionIds,
+            benchChampions: (champSelect as any)?.benchChampions,
+            champions: (champSelect as any)?.champions,
+            championIds: (champSelect as any)?.championIds
+        });
+
+        const needsBenchFetch =
+            isARAM &&
+            (champSelect?.benchEnabled || champSelect?.benchSwapEnabled || normalizedGameMode === 'KIWI') &&
+            (benchChampionIds.length === 0);
+
+        const fetchBench = async () => {
+            if (!needsBenchFetch) return;
+            setLoadingBench(true);
+            try {
+                const result = await lcuBridge.request('/lol-champ-select/v1/session/bench');
+                if (!cancelled && result.status === 200) {
+                    applyBench(result.content);
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    console.warn('[ChampSelect] Failed to fetch bench state', error);
+                }
+            } finally {
+                if (!cancelled) setLoadingBench(false);
+            }
+        };
+
+        fetchBench();
+        return () => { cancelled = true; };
+    }, [benchChampionIds.length, champSelect?.benchChampionIds, champSelect?.benchChampions, champSelect?.benchEnabled, champSelect?.benchSwapEnabled, isARAM, lcuBridge, normalizeBenchPayload, normalizedGameMode]);
+
     const refreshRunes = useCallback(async () => {
         try {
             const pagesRes = await lcuBridge.request('/lol-perks/v1/pages');
@@ -130,7 +268,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
 
     const loadData = async () => {
         try {
-            setLoading(true);
+            setLoadingResources(true);
             // 1. Fetch DDragon Version
             const versionRes = await fetch('https://ddragon.leagueoflegends.com/api/versions.json');
             const versions = await versionRes.json();
@@ -246,18 +384,13 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             setSpells(spellList);
 
             // Helper to get spell name from ID for image URL
-            (window as any).spellMap = {};
-            spellList.forEach((s: any) => (window as any).spellMap[s.id] = s.key);
+            spellMapRef.current = {};
+            spellList.forEach((s: any) => spellMapRef.current[s.id] = s.key);
 
-            if (isARAM) {
-                // Load Reroll State
-                const rerollResult = await lcuBridge.request('/lol-summoner/v1/current-summoner/rerollPoints');
-                if (rerollResult.status === 200) setRerollState(rerollResult.content);
-            }
         } catch (error) {
             console.error('Failed to load data:', error);
         } finally {
-            setLoading(false);
+            setLoadingResources(false);
         }
     };
 
@@ -468,6 +601,8 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         return uri;
     };
 
+
+
     const initRuneBuilder = useCallback((opts?: { preserveName?: boolean }) => {
         if (!perkStyles.length) return;
         const defaultPrimary = activeRunePage?.primaryStyleId || perkStyles[0].id;
@@ -620,14 +755,32 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         }
     };
 
+    // Optimistic state for spells to ensure UI updates immediately
+    const [optimisticSpells, setOptimisticSpells] = useState<{ spell1Id: number | null; spell2Id: number | null }>({ spell1Id: null, spell2Id: null });
+
+    // Helper to get spell name (ensure it exists)
+    const getSpellName = (spellId: number | undefined) => {
+        if (!spellId) return 'SummonerFlash'; // Fallback
+        return spellMapRef.current[spellId] || 'SummonerFlash';
+    };
+
     const handleSpellSelect = async (spellId: number) => {
+        const currentSpell1 = optimisticSpells.spell1Id ?? localPlayer?.spell1Id;
+        const currentSpell2 = optimisticSpells.spell2Id ?? localPlayer?.spell2Id;
+
+        const first = pickingFirstSpell ? spellId : currentSpell1;
+        const second = !pickingFirstSpell ? spellId : currentSpell2;
+
+        // Optimistic update
+        setOptimisticSpells({ spell1Id: first, spell2Id: second });
+        setShowSpellPicker(false);
+
         try {
-            const first = pickingFirstSpell ? spellId : localPlayer?.spell1Id;
-            const second = !pickingFirstSpell ? spellId : localPlayer?.spell2Id;
             await lcuBridge.request('/lol-champ-select/v1/session/my-selection', 'PATCH', { spell1Id: first, spell2Id: second });
-            setShowSpellPicker(false);
         } catch (error) {
             console.error('Failed to select spell:', error);
+            // Revert optimistic update on failure (optional, but good practice)
+            // For now, we rely on the next LCU update to fix it if it failed
         }
     };
 
@@ -657,13 +810,26 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         setShowSpellPicker(true);
     };
 
-    const handleReroll = async () => {
-        try {
-            await lcuBridge.request('/lol-aram/v1/reroll', 'POST');
-        } catch (error) {
-            console.error('Failed to reroll:', error);
+    const waitForBenchAvailability = useCallback(async (championId: number, attempts = 8, delayMs = 300) => {
+        for (let i = 0; i < attempts; i++) {
+            try {
+                const result = await lcuBridge.request('/lol-champ-select/v1/session/bench');
+                if (result.status === 200) {
+                    const parsed = normalizeBenchPayload(result.content);
+                    if (parsed.length > 0) {
+                        setBenchChampionIds(parsed);
+                    }
+                    if (parsed.includes(championId)) {
+                        return true;
+                    }
+                }
+            } catch (error) {
+                console.warn('[ChampSelect] Bench availability check failed', error);
+            }
+            await new Promise(resolve => setTimeout(resolve, delayMs));
         }
-    };
+        return false;
+    }, [lcuBridge, normalizeBenchPayload]);
 
     const handleSwap = async (championId: number) => {
         // Validate inputs
@@ -688,6 +854,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         try {
             console.log(`[ChampSelect] Attempting to swap with champion ${championId} (${championName})`);
 
+            // Always attempt the swap; if LCU says not ready, we prompt the wait modal
             const result = await lcuBridge.request(`/lol-champ-select/v1/session/bench/swap/${championId}`, 'POST');
 
             if (result.status === 200 || result.status === 204) {
@@ -698,8 +865,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                     try {
                         const refreshResult = await lcuBridge.request('/lol-champ-select/v1/session');
                         if (refreshResult.status === 200 && refreshResult.content) {
-                            // The parent component will update champSelect via the observer
-                            // We just need to reload skins for the new champion
                             const updatedLocalPlayer = refreshResult.content.myTeam?.find(
                                 (m: any) => m.cellId === refreshResult.content.localPlayerCellId
                             );
@@ -717,17 +882,48 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         } catch (error: any) {
             console.error('Failed to swap:', error);
             const errorMsg = error.message || `Failed to swap to ${championName}. Please try again.`;
-            if (onError) {
-                onError(errorMsg);
+            if (onError) onError(errorMsg);
+
+            // If swap fails (likely bench not ready), show wait modal and refresh bench once
+            setWaitModalVisible(true);
+            try {
+                const benchRefresh = await lcuBridge.request('/lol-champ-select/v1/session/bench');
+                if (benchRefresh.status === 200 && benchRefresh.content) {
+                    const parsed = normalizeBenchPayload(benchRefresh.content);
+                    if (parsed.length > 0) setBenchChampionIds(parsed);
+                }
+            } catch {
+                // ignore
             }
         } finally {
             setSwappingChampionId(null);
         }
     };
 
-    const handleChampionSelect = (championId: number) => {
+    const handleChampionSelect = async (championId: number) => {
         // Once picked on SR, prevent further clicks (ARAM swaps handled via bench)
-        if (!isARAM && hasPickedChampion && selectionMode === 'pick') return;
+        if (!isARAM && hasPickedChampion && selectionMode === 'pick' && !currentAction) return;
+
+        // In ARAM/Şamata modes, ensure we only try to pick from the offered pool (pickable or bench-derived)
+        if (isARAM) {
+            const offeredSet = new Set(offeredChampionIds);
+            if (offeredSet.size > 0 && !offeredSet.has(championId)) {
+                const msg = 'This champion is not in your offered pool for this roll.';
+                if (onError) onError(msg);
+                return;
+            }
+        }
+
+        // 1. Hover the champion first (update LCU)
+        if (currentAction) {
+            try {
+                await lcuBridge.request(`/lol-champ-select/v1/session/actions/${currentAction.id}`, 'PATCH', { championId });
+            } catch (e) {
+                console.warn('[ChampSelect] Failed to hover champion', e);
+            }
+        }
+
+        // 2. Show confirmation modal
         setConfirmModal({ visible: true, championId, action: selectionMode });
     };
 
@@ -744,29 +940,132 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         setConfirmModal({ visible: false, championId: null, action: selectionMode });
     };
 
-    // Enhance team members with champion data
+    // Helper to determine member status from actions
+    const getMemberStatus = useCallback((cellId: number, currentChampionId: number) => {
+        if (!currentChampionId) return 'none';
+
+        // Find the pick action for this cellId
+        const actions = champSelect?.actions || [];
+        for (const turn of actions) {
+            for (const action of turn) {
+                if (action.actorCellId === cellId && action.type === 'pick') {
+                    if (action.completed) return 'picked';
+                    // If action is in progress and they have a champion selected, it's a hover
+                    // Note: LCU updates member.championId when hovering during their turn
+                    if (action.championId === currentChampionId) return 'hovering';
+                }
+            }
+        }
+
+        // Fallback: if we have a championId but no active pick action found (e.g. post-lock or enemy),
+        // we might assume it's picked if the phase is done, but for now let's assume 'hovering'
+        // unless we can verify it's locked. 
+        // Actually, for enemies in draft, we only see them when they lock (usually) or during their turn.
+        // If it's blind pick, we don't see enemy.
+        // Let's stick to: if championId > 0, check if there's a completed pick action.
+
+        // Simplified check:
+        // If there is ANY completed pick action for this cellId with this championId, it's picked.
+        const hasCompletedPick = actions.some((turn: any[]) =>
+            turn.some((a: any) => a.actorCellId === cellId && a.type === 'pick' && a.completed)
+        );
+        if (hasCompletedPick) return 'picked';
+
+        return 'hovering';
+    }, [champSelect?.actions]);
+
+    // Enhance team members with champion data and status
     const enhancedMyTeam = useMemo(() => {
         return myTeam.map((m: any) => ({
             ...m,
-            championName: championMap[m.championId]?.key || 'Unknown'
+            championName: championMap[m.championId]?.key || 'Unknown',
+            status: getMemberStatus(m.cellId, m.championId)
         }));
-    }, [myTeam, championMap]);
+    }, [myTeam, championMap, getMemberStatus]);
 
     const enhancedTheirTeam = useMemo(() => {
         return theirTeam.map((m: any) => ({
             ...m,
-            championName: championMap[m.championId]?.key || 'Unknown'
+            championName: championMap[m.championId]?.key || 'Unknown',
+            status: getMemberStatus(m.cellId, m.championId)
         }));
-    }, [theirTeam, championMap]);
+    }, [theirTeam, championMap, getMemberStatus]);
 
-    if (loading) {
-        return (
-            <View style={[styles.container, styles.center]}>
-                <ActivityIndicator size="large" color="#4f46e5" />
-                <Text style={styles.loadingText}>Loading Champion Select...</Text>
-            </View>
-        );
-    }
+    // Calculate grid states
+    const hoveredId = localPlayer?.championId && localPlayer.championId > 0 ? localPlayer.championId : null;
+
+    const teammateHoveredIds = useMemo(() => {
+        return enhancedMyTeam
+            .filter((m: any) => m.cellId !== localPlayerCellId && m.status === 'hovering' && m.championId > 0)
+            .map((m: any) => m.championId);
+    }, [enhancedMyTeam, localPlayerCellId]);
+
+    const pickedIds = useMemo(() => {
+        const ids = new Set<number>();
+        [...enhancedMyTeam, ...enhancedTheirTeam].forEach((m: any) => {
+            if (m.status === 'picked' && m.championId > 0) {
+                ids.add(m.championId);
+            }
+        });
+        return Array.from(ids);
+    }, [enhancedMyTeam, enhancedTheirTeam]);
+
+    const bannedIds = useMemo(() => {
+        const ids = new Set<number>();
+        if (champSelect?.bans?.myTeamBans) champSelect.bans.myTeamBans.forEach((id: number) => ids.add(id));
+        if (champSelect?.bans?.theirTeamBans) champSelect.bans.theirTeamBans.forEach((id: number) => ids.add(id));
+        return Array.from(ids);
+    }, [champSelect?.bans]);
+
+    // Sync optimistic spells with real state when it updates
+    useEffect(() => {
+        if (!localPlayer) return;
+        // If real state matches optimistic, or if real state changed to something else, clear optimistic
+        if (optimisticSpells.spell1Id && localPlayer.spell1Id === optimisticSpells.spell1Id) {
+            setOptimisticSpells(prev => ({ ...prev, spell1Id: null }));
+        }
+        if (optimisticSpells.spell2Id && localPlayer.spell2Id === optimisticSpells.spell2Id) {
+            setOptimisticSpells(prev => ({ ...prev, spell2Id: null }));
+        }
+    }, [localPlayer?.spell1Id, localPlayer?.spell2Id, optimisticSpells]);
+
+    const activeSpell1 = optimisticSpells.spell1Id ?? localPlayer?.spell1Id;
+    const activeSpell2 = optimisticSpells.spell2Id ?? localPlayer?.spell2Id;
+
+    // Filter champions for ARAM pick phase (if specific pool is provided)
+    const displayedChampions = useMemo(() => {
+        if (isARAM && pickableChampionIds.length > 0) {
+            const allowed = new Set(pickableChampionIds);
+            return champions.filter(c => allowed.has(c.id));
+        }
+        return champions;
+    }, [champions, isARAM, pickableChampionIds]);
+
+    const offeredChampionIds = useMemo(() => {
+        if (!isARAM) return [];
+
+        // Prefer explicit benchChampions from the live session payload (these reflect the ARAM offers)
+        const sessionBench = Array.isArray((champSelect as any)?.benchChampions)
+            ? (champSelect as any).benchChampions
+            : [];
+        const sessionBenchIds = sessionBench
+            .map((b: any) => (typeof b?.championId === 'number' ? b.championId : null))
+            .filter((id: any) => typeof id === 'number' && id > 0);
+
+        if (sessionBenchIds.length > 0) return Array.from(new Set(sessionBenchIds));
+
+        // Next, try pickableChampionIds if the client populates it
+        const inline = Array.isArray(pickableChampionIds) ? pickableChampionIds : [];
+        if (inline.length > 0) return Array.from(new Set(inline));
+
+        // Finally, fall back to our bench state
+        if (benchChampionIds.length > 0) return Array.from(new Set(benchChampionIds));
+
+        return [];
+    }, [benchChampionIds, champSelect, isARAM, pickableChampionIds]);
+
+    const hasOfferedPool = offeredChampionIds.length > 0;
+    const showBenchWidget = isARAM;
 
     return (
         <SafeAreaView style={styles.safeArea}>
@@ -774,6 +1073,14 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 <View style={styles.header}>
                     <Text style={styles.timerText}>{timeLeft > 0 ? timeLeft : '--'}</Text>
                     <Text style={styles.phaseText}>{currentAction?.type?.toLowerCase() === 'ban' ? 'Ban Phase' : 'Pick Phase'}</Text>
+                    {/* Debug Info for ARAM */}
+                    <Text style={{ color: 'yellow', fontSize: 10 }}>
+                        ARAM:{isARAM ? 'Y' : 'N'} BenchEn:{showBench ? 'Y' : 'N'}
+                        Bench#{benchChampionIds.length}
+                        Pick#{pickableChampionIds.length}
+                        {loadingBench ? ' (bench..)' : ''}
+                    </Text>
+                    {loadingResources && <ActivityIndicator size="small" color="#4f46e5" style={{ marginTop: 5 }} />}
                 </View>
 
                 <Tab
@@ -784,21 +1091,94 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 >
                     <Tab.Item title="Champion" titleStyle={styles.tabTitle} containerStyle={styles.tabItem} />
                     <Tab.Item title="Loadout" titleStyle={styles.tabTitle} containerStyle={styles.tabItem} />
-                    {isARAM && <Tab.Item title="ARAM" titleStyle={styles.tabTitle} containerStyle={styles.tabItem} />}
                 </Tab>
 
                 <TabView value={index} onChange={setIndex} animationType="spring">
                     {/* Champion Tab */}
                     <TabView.Item style={styles.tabContent}>
-                        <View style={styles.championTabContent}>
+                        <ScrollView
+                            style={styles.championTabContent}
+                            contentContainerStyle={styles.championTabContentContainer}
+                            showsVerticalScrollIndicator={false}
+                        >
                             <View style={styles.teamViewContainer}>
                                 <TeamView
                                     myTeam={enhancedMyTeam}
                                     theirTeam={enhancedTheirTeam}
-                                    bans={[]}
+                                    bans={isARAM ? [] : bannedIds}
                                     version={ddragonVersion}
                                 />
                             </View>
+
+                            {/* Offered Champions removed per request */}
+
+                            {showBenchWidget && (
+                                <View style={styles.aramScrollWrapper}>
+                                    <View style={styles.aramMessageContainer}>
+                                        <Text style={styles.aramMessage}>ARAM Bench</Text>
+                                        <Text style={styles.aramSubMessage}>Your available swaps appear below.</Text>
+                                    </View>
+
+                                    <Text style={[styles.sectionTitle, { marginTop: 10 }]}>Available to Swap</Text>
+                                    {(!benchChampionIds || benchChampionIds.length === 0) ? (
+                                        <View style={styles.emptyBenchContainer}>
+                                            {loadingBench ? (
+                                                <ActivityIndicator size="small" color="#4f46e5" />
+                                            ) : (
+                                                <>
+                                                    <Text style={styles.emptyBenchText}>Bench is empty right now</Text>
+                                                    <Text style={styles.emptyBenchSubText}>Unpicked champs will appear here</Text>
+                                                </>
+                                            )}
+                                        </View>
+                                    ) : (
+                                        <View style={styles.benchGrid}>
+                                            {benchChampionIds.map((id: number) => {
+                                                const isSwapping = swappingChampionId === id;
+                                                const champion = championMap[id];
+                                                const championName = champion?.name || 'Unknown';
+
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={`bench-${id}`}
+                                                        onPress={() => handleSwap(id)}
+                                                        style={[
+                                                            styles.benchItem,
+                                                            isSwapping && styles.benchItemSwapping
+                                                        ]}
+                                                        disabled={isSwapping || swappingChampionId !== null}
+                                                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                                                        activeOpacity={0.8}
+                                                    >
+                                                        {isSwapping ? (
+                                                            <View style={styles.benchLoadingContainer}>
+                                                                <ActivityIndicator size="small" color="#4f46e5" />
+                                                            </View>
+                                                        ) : (
+                                                            <>
+                                                                {safeImageUri(champion?.key ? `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` : null) ? (
+                                                                    <Image
+                                                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` }}
+                                                                        style={styles.benchImage}
+                                                                    />
+                                                                ) : (
+                                                                    <View style={[styles.benchImage, styles.benchPlaceholder]} />
+                                                                )}
+                                                                <View style={styles.benchOverlay}>
+                                                                    <Text style={styles.benchSwapText}>SWAP</Text>
+                                                                </View>
+                                                            </>
+                                                        )}
+                                                        <Text style={styles.benchChampionName} numberOfLines={1}>
+                                                            {championName}
+                                                        </Text>
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                    )}
+                                </View>
+                            )}
 
                             {!isARAM && (
                                 <>
@@ -809,72 +1189,19 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                                     </View>
                                     <View style={styles.gridContainer}>
                                         <ChampionGrid
-                                            champions={champions}
+                                            champions={displayedChampions}
                                             onSelect={handleChampionSelect}
                                             version={ddragonVersion}
-                                            disabled={!isARAM && hasPickedChampion && selectionMode === 'pick'}
+                                            disabled={!isARAM && hasPickedChampion && selectionMode === 'pick' && !currentAction}
+                                            hoveredId={hoveredId}
+                                            teammateHoveredIds={teammateHoveredIds}
+                                            pickedIds={pickedIds}
+                                            bannedIds={bannedIds}
                                         />
                                     </View>
                                 </>
                             )}
-
-                            {isARAM && (
-                                <ScrollView style={styles.aramScrollWrapper}>
-                                    <View style={styles.aramMessageContainer}>
-                                        <Text style={styles.aramMessage}>ARAM: Random Champion Assigned</Text>
-                                        <Text style={styles.aramSubMessage}>Tap a bench champion below to swap</Text>
-                                    </View>
-
-                                    {champSelect?.benchChampionIds && champSelect.benchChampionIds.length > 0 && (
-                                        <>
-                                            <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Available to Swap</Text>
-                                            <View style={styles.benchGrid}>
-                                                {champSelect.benchChampionIds.map((id: number) => {
-                                                    const isSwapping = swappingChampionId === id;
-                                                    const champion = championMap[id];
-                                                    const championName = champion?.name || 'Unknown';
-
-                                                    return (
-                                                        <TouchableOpacity
-                                                            key={`bench-${id}`}
-                                                            onPress={() => handleSwap(id)}
-                                                            style={[
-                                                                styles.benchItem,
-                                                                isSwapping && styles.benchItemSwapping
-                                                            ]}
-                                                            disabled={isSwapping || swappingChampionId !== null}
-                                                        >
-                                                            {isSwapping ? (
-                                                                <View style={styles.benchLoadingContainer}>
-                                                                    <ActivityIndicator size="small" color="#4f46e5" />
-                                                                </View>
-                                                            ) : (
-                                                                <>
-                                                                    {safeImageUri(champion?.key ? `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` : null) ? (
-                                                                        <Image
-                                                                            source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` }}
-                                                                            style={styles.benchImage}
-                                                                        />
-                                                                    ) : (
-                                                                        <View style={[styles.benchImage, styles.benchPlaceholder]} />
-                                                                    )}
-                                                                    <View style={styles.benchOverlay}>
-                                                                        <Text style={styles.benchSwapText}>SWAP</Text>
-                                                                    </View>
-                                                                </>
-                                                            )}
-                                                            <Text style={styles.benchChampionName} numberOfLines={1}>
-                                                                {championName}
-                                                            </Text>
-                                                        </TouchableOpacity>
-                                                    );
-                                                })}
-                                            </View>
-                                        </>
-                                    )}
-                                </ScrollView>
-                            )}
-                        </View>
+                        </ScrollView>
                     </TabView.Item>
 
                     {/* Loadout Tab */}
@@ -915,13 +1242,13 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                             <View style={styles.spellsContainer}>
                                 <TouchableOpacity style={styles.spellButton} onPress={() => openSpellPicker(true)}>
                                     <Image
-                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(localPlayer?.spell1Id)}.png` }}
+                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(activeSpell1)}.png` }}
                                         style={styles.spellIcon}
                                     />
                                 </TouchableOpacity>
                                 <TouchableOpacity style={styles.spellButton} onPress={() => openSpellPicker(false)}>
                                     <Image
-                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(localPlayer?.spell2Id)}.png` }}
+                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(activeSpell2)}.png` }}
                                         style={styles.spellIcon}
                                     />
                                 </TouchableOpacity>
@@ -938,69 +1265,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
 
 
 
-                    {/* ARAM Tab */}
-                    {isARAM && (
-                        <TabView.Item style={styles.tabContent}>
-                            <ScrollView>
-                                <View style={styles.rerollContainer}>
-                                    <Text style={styles.rerollText}>Rerolls: {rerollState?.numberOfRolls}/{rerollState?.maxRolls}</Text>
-                                    <Button
-                                        title="Reroll"
-                                        onPress={handleReroll}
-                                        disabled={rerollState?.numberOfRolls === 0}
-                                        buttonStyle={styles.rerollButton}
-                                    />
-                                </View>
-
-                                <Text style={styles.sectionTitle}>Bench</Text>
-                                {!champSelect?.benchChampionIds || champSelect.benchChampionIds.length === 0 ? (
-                                    <View style={styles.emptyBenchContainer}>
-                                        <Text style={styles.emptyBenchText}>No champions available on bench</Text>
-                                        <Text style={styles.emptyBenchSubText}>Reroll to get more champions</Text>
-                                    </View>
-                                ) : (
-                                    <View style={styles.benchGrid}>
-                                        {champSelect.benchChampionIds.map((id: number) => {
-                                            const isSwapping = swappingChampionId === id;
-                                            const champion = championMap[id];
-                                            const championName = champion?.name || 'Unknown';
-
-                                            return (
-                                                <TouchableOpacity
-                                                    key={id}
-                                                    onPress={() => handleSwap(id)}
-                                                    style={[
-                                                        styles.benchItem,
-                                                        isSwapping && styles.benchItemSwapping
-                                                    ]}
-                                                    disabled={isSwapping || swappingChampionId !== null}
-                                                >
-                                                    {isSwapping ? (
-                                                        <View style={styles.benchLoadingContainer}>
-                                                            <ActivityIndicator size="small" color="#4f46e5" />
-                                                        </View>
-                                                    ) : (
-                                                        <>
-                                                            <Image
-                                                                source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` }}
-                                                                style={styles.benchImage}
-                                                            />
-                                                            <View style={styles.benchOverlay}>
-                                                                <Text style={styles.benchSwapText}>SWAP</Text>
-                                                            </View>
-                                                        </>
-                                                    )}
-                                                    <Text style={styles.benchChampionName} numberOfLines={1}>
-                                                        {championName}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            );
-                                        })}
-                                    </View>
-                                )}
-                            </ScrollView>
-                        </TabView.Item>
-                    )}
                 </TabView>
 
                 {/* Pickers */}
@@ -1342,20 +1606,20 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                         </View>
                     </View>
                 </Modal>
+
+                <CustomModal
+                    visible={waitModalVisible}
+                    title="Please wait"
+                    message="Bench is updating. Try again in a moment."
+                    type="info"
+                    onClose={() => setWaitModalVisible(false)}
+                />
             </View >
         </SafeAreaView>
     );
 }
 
-// Helper function to get spell key from ID (needs to be outside or memoized)
-const getSpellName = (id: number) => {
-    // This is a bit hacky, ideally we use the map we created.
-    // For now, let's rely on the global or passed prop if possible, 
-    // or just iterate the spells list if we had access to it here.
-    // Since we are inside the component in the render, we can use the 'spells' state if we move this function inside or pass spells to it.
-    // But for the image source in render, we can just find it.
-    return (window as any).spellMap?.[id] || 'SummonerFlash'; // Fallback
-};
+
 
 const styles = StyleSheet.create({
     safeArea: {
@@ -1402,8 +1666,10 @@ const styles = StyleSheet.create({
         flex: 1,
     },
     championTabContent: {
-        flexGrow: 1,
-        paddingBottom: 24,
+        flex: 1,
+    },
+    championTabContentContainer: {
+        paddingBottom: 32,
     },
     teamViewContainer: {
         paddingHorizontal: 10,
@@ -1416,6 +1682,44 @@ const styles = StyleSheet.create({
     gridContainer: {
         flex: 1,
         padding: 10,
+    },
+    offeredPlaceholder: {
+        marginHorizontal: 16,
+        marginTop: 12,
+        padding: 16,
+        borderRadius: 12,
+        backgroundColor: '#111827',
+        borderWidth: 1,
+        borderColor: '#1f2937',
+        alignItems: 'center',
+    },
+    offeredHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 8,
+    },
+    offeredHint: {
+        color: '#9ca3af',
+        fontSize: 12,
+    },
+    offeredTitle: {
+        color: '#ffffff',
+        fontSize: 16,
+        fontWeight: '700',
+        marginBottom: 4,
+    },
+    offeredSubtitle: {
+        color: '#9ca3af',
+        fontSize: 13,
+        textAlign: 'center',
+        lineHeight: 18,
+    },
+    offeredAction: {
+        marginTop: 6,
+        color: '#4f46e5',
+        fontSize: 12,
+        fontWeight: '700',
     },
     pickModeRow: {
         flexDirection: 'row',
@@ -1542,45 +1846,54 @@ const styles = StyleSheet.create({
         height: 50,
         borderRadius: 6,
     },
-    rerollContainer: {
-        alignItems: 'center',
-        marginBottom: 30,
-        marginTop: 20,
-    },
-    rerollText: {
-        color: '#ffffff',
-        fontSize: 18,
-        marginBottom: 10,
-    },
-    rerollButton: {
-        backgroundColor: '#eab308',
-        paddingHorizontal: 40,
-        borderRadius: 20,
-    },
     benchGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 10,
+        justifyContent: 'space-between',
         paddingHorizontal: 20,
+        marginTop: 6,
+        paddingBottom: 24,
+    },
+    offeredContainer: {
+        paddingHorizontal: 20,
+        marginTop: 12,
+    },
+    offeredRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        marginTop: 8,
+    },
+    offeredItem: {
+        alignItems: 'center',
+        width: 80,
+        marginRight: 10,
+        marginBottom: 10,
+    },
+    offeredIcon: {
+        width: 64,
+        height: 64,
+        borderRadius: 10,
+        marginBottom: 6,
+        backgroundColor: '#171717',
     },
     benchItem: {
-        width: 80,
+        width: 104,
         backgroundColor: '#171717',
         justifyContent: 'center',
         alignItems: 'center',
-        borderRadius: 8,
+        borderRadius: 12,
         borderWidth: 1,
         borderColor: '#262626',
         overflow: 'hidden',
-        marginBottom: 8,
+        marginBottom: 14,
     },
     benchItemSwapping: {
         opacity: 0.6,
         borderColor: '#4f46e5',
     },
     benchImage: {
-        width: 80,
-        height: 80,
+        width: 104,
+        height: 104,
     },
     benchPlaceholder: {
         backgroundColor: '#1f2937',
@@ -1600,19 +1913,20 @@ const styles = StyleSheet.create({
         fontSize: 12,
         fontWeight: 'bold',
         textTransform: 'uppercase',
+        letterSpacing: 0.5,
     },
     benchChampionName: {
         color: '#ffffff',
-        fontSize: 11,
+        fontSize: 12,
         fontWeight: '500',
-        marginTop: 4,
+        marginTop: 6,
         textAlign: 'center',
-        paddingHorizontal: 4,
-        maxWidth: 80,
+        paddingHorizontal: 6,
+        maxWidth: 104,
     },
     benchLoadingContainer: {
-        width: 80,
-        height: 80,
+        width: 104,
+        height: 104,
         justifyContent: 'center',
         alignItems: 'center',
         backgroundColor: '#171717',

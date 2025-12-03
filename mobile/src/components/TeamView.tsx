@@ -9,6 +9,7 @@ interface TeamMember {
     assignedPosition: string;
     team: number;
     championName?: string;
+    status?: 'picked' | 'hovering' | 'none';
 }
 
 interface TeamViewProps {
@@ -19,27 +20,46 @@ interface TeamViewProps {
 }
 
 export default function TeamView({ myTeam, theirTeam, bans, version = '14.23.1' }: TeamViewProps) {
-    const renderMember = (member: TeamMember, isEnemy: boolean) => (
-        <View key={member.cellId} style={[styles.memberCard, isEnemy && styles.enemyCard]}>
-            <View style={styles.memberContent}>
-                <Avatar
-                    size={40}
-                    rounded
-                    source={{
-                        uri: member.championId > 0 && member.championName
-                            ? `https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${member.championName}.png`
-                            : undefined
-                    }}
-                    icon={{ name: 'user', type: 'font-awesome', color: '#525252' }}
-                    containerStyle={{ backgroundColor: '#262626', borderWidth: 1, borderColor: isEnemy ? '#7f1d1d' : '#1e3a8a' }}
-                />
-                <View style={styles.memberInfo}>
-                    <Text style={styles.memberName} numberOfLines={1}>{member.summonerName || (isEnemy ? 'Enemy' : 'Ally')}</Text>
-                    <Text style={styles.memberRole}>{member.assignedPosition}</Text>
+    const renderMember = (member: TeamMember, isEnemy: boolean) => {
+        const isHovering = member.status === 'hovering';
+        const isPicked = member.status === 'picked';
+        const hasChampion = member.championId > 0;
+
+        return (
+            <View key={member.cellId} style={[styles.memberCard, isEnemy && styles.enemyCard]}>
+                <View style={styles.memberContent}>
+                    <View>
+                        <Avatar
+                            size={40}
+                            rounded
+                            source={{
+                                uri: hasChampion && member.championName
+                                    ? `https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${member.championName}.png`
+                                    : undefined
+                            }}
+                            icon={{ name: 'user', type: 'font-awesome', color: '#525252' }}
+                            containerStyle={{
+                                backgroundColor: '#262626',
+                                borderWidth: isPicked ? 2 : 1,
+                                borderColor: isPicked ? (isEnemy ? '#ef4444' : '#10b981') : (isEnemy ? '#7f1d1d' : '#1e3a8a'),
+                                opacity: isHovering ? 0.6 : 1
+                            }}
+                        />
+                        {isHovering && (
+                            <View style={styles.hoverIndicator}>
+                                <Text style={styles.hoverIndicatorText}>...</Text>
+                            </View>
+                        )}
+                    </View>
+                    <View style={styles.memberInfo}>
+                        <Text style={styles.memberName} numberOfLines={1}>{member.summonerName || (isEnemy ? 'Enemy' : 'Ally')}</Text>
+                        <Text style={styles.memberRole}>{member.assignedPosition}</Text>
+                        {isHovering && <Text style={styles.statusText}>Hovering</Text>}
+                    </View>
                 </View>
             </View>
-        </View>
-    );
+        );
+    };
 
     return (
         <View style={styles.container}>
@@ -142,6 +162,30 @@ const styles = StyleSheet.create({
     noBans: {
         color: '#525252',
         fontSize: 12,
+        fontStyle: 'italic',
+    },
+    hoverIndicator: {
+        position: 'absolute',
+        bottom: -2,
+        right: -2,
+        backgroundColor: '#eab308',
+        borderRadius: 10,
+        width: 16,
+        height: 16,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#000',
+    },
+    hoverIndicatorText: {
+        color: '#000',
+        fontSize: 10,
+        fontWeight: 'bold',
+        lineHeight: 12,
+    },
+    statusText: {
+        color: '#eab308',
+        fontSize: 10,
         fontStyle: 'italic',
     },
 });

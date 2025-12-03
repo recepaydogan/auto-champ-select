@@ -1,6 +1,8 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Animated, Dimensions } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Animated, Dimensions, Platform } from 'react-native';
 import { Invite } from '../hooks/useInviteListener';
+import { LinearGradient } from 'expo-linear-gradient';
+import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 
 interface InviteToastProps {
     invite: Invite;
@@ -8,162 +10,261 @@ interface InviteToastProps {
     onDecline: (id: string) => void;
 }
 
-export default function InviteToast({ invite, onAccept, onDecline }: InviteToastProps) {
-    const slideAnim = React.useRef(new Animated.Value(-100)).current;
+const { width } = Dimensions.get('window');
 
-    React.useEffect(() => {
-        Animated.spring(slideAnim, {
-            toValue: 20, // Top margin
-            useNativeDriver: true,
-            tension: 50,
-            friction: 7
+export default function InviteToast({ invite, onAccept, onDecline }: InviteToastProps) {
+    const slideAnim = useRef(new Animated.Value(-150)).current;
+    const scaleAnim = useRef(new Animated.Value(0.9)).current;
+    const progressAnim = useRef(new Animated.Value(1)).current;
+
+    useEffect(() => {
+        // Entrance animation
+        const targetOffset = Platform.OS === 'android' ? 32 : 24;
+        Animated.parallel([
+            Animated.spring(slideAnim, {
+                toValue: targetOffset, // Sit a bit lower under the status bar
+                useNativeDriver: true,
+                tension: 60,
+                friction: 8
+            }),
+            Animated.spring(scaleAnim, {
+                toValue: 1,
+                useNativeDriver: true,
+                tension: 70,
+                friction: 7
+            })
+        ]).start();
+
+        // Progress bar animation (30 seconds timeout visualization)
+        Animated.timing(progressAnim, {
+            toValue: 0,
+            duration: 30000,
+            useNativeDriver: false // width doesn't support native driver
         }).start();
-    }, [slideAnim]);
+    }, []);
+
+    const handleAccept = () => {
+        Animated.parallel([
+            Animated.timing(scaleAnim, { toValue: 1.1, duration: 100, useNativeDriver: true }),
+            Animated.timing(slideAnim, { toValue: -200, duration: 200, useNativeDriver: true })
+        ]).start(() => onAccept(invite.invitationId));
+    };
+
+    const handleDecline = () => {
+        Animated.timing(slideAnim, {
+            toValue: -200,
+            duration: 200,
+            useNativeDriver: true
+        }).start(() => onDecline(invite.invitationId));
+    };
 
     return (
-        <Animated.View style={[styles.container, { transform: [{ translateY: slideAnim }] }]}>
-            <View style={styles.content}>
-                <View style={styles.header}>
-                    <Text style={styles.title}>Game Invite</Text>
-                    <Text style={styles.time}>Just now</Text>
+        <Animated.View style={[
+            styles.container,
+            { transform: [{ translateY: slideAnim }, { scale: scaleAnim }] }
+        ]}>
+            <LinearGradient
+                colors={['#1e1b4b', '#312e81']} // Deep Indigo Gradient
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.gradient}
+            >
+                {/* Progress Bar */}
+                <View style={styles.progressContainer}>
+                    <Animated.View
+                        style={[
+                            styles.progressBar,
+                            {
+                                width: progressAnim.interpolate({
+                                    inputRange: [0, 1],
+                                    outputRange: ['0%', '100%']
+                                })
+                            }
+                        ]}
+                    />
                 </View>
 
-                <View style={styles.details}>
-                    <View style={styles.avatarPlaceholder}>
-                        <Text style={styles.avatarText}>
-                            {invite.fromSummonerName?.charAt(0).toUpperCase() || '?'}
-                        </Text>
+                <View style={styles.content}>
+                    {/* Left: Avatar/Icon */}
+                    <View style={styles.iconContainer}>
+                        <LinearGradient
+                            colors={['#4f46e5', '#818cf8']}
+                            style={styles.avatarGradient}
+                        >
+                            <Text style={styles.avatarText}>
+                                {invite.fromSummonerName?.charAt(0).toUpperCase() || '?'}
+                            </Text>
+                        </LinearGradient>
+                        <View style={styles.onlineBadge} />
                     </View>
+
+                    {/* Middle: Text Info */}
                     <View style={styles.textContainer}>
+                        <Text style={styles.inviteTitle}>GAME INVITE</Text>
                         <Text style={styles.senderName} numberOfLines={1}>
                             {invite.fromSummonerName}
                         </Text>
-                        <Text style={styles.queueName} numberOfLines={1}>
-                            {invite.queueName}
-                        </Text>
+                        <View style={styles.queueRow}>
+                            <Icon name="gamepad-variant" size={12} color="#94a3b8" style={{ marginRight: 4 }} />
+                            <Text style={styles.queueName} numberOfLines={1}>
+                                {invite.queueName}
+                            </Text>
+                        </View>
+                    </View>
+
+                    {/* Right: Actions */}
+                    <View style={styles.actions}>
+                        <TouchableOpacity
+                            style={styles.declineButton}
+                            onPress={handleDecline}
+                            activeOpacity={0.7}
+                        >
+                            <Icon name="close" size={20} color="#cbd5e1" />
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.acceptButton}
+                            onPress={handleAccept}
+                            activeOpacity={0.7}
+                        >
+                            <LinearGradient
+                                colors={['#22c55e', '#16a34a']}
+                                style={styles.acceptGradient}
+                            >
+                                <Icon name="check" size={20} color="#ffffff" />
+                            </LinearGradient>
+                        </TouchableOpacity>
                     </View>
                 </View>
-
-                <View style={styles.actions}>
-                    <TouchableOpacity
-                        style={[styles.button, styles.declineButton]}
-                        onPress={() => onDecline(invite.invitationId)}
-                    >
-                        <Text style={styles.declineText}>Decline</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                        style={[styles.button, styles.acceptButton]}
-                        onPress={() => onAccept(invite.invitationId)}
-                    >
-                        <Text style={styles.acceptText}>Accept</Text>
-                    </TouchableOpacity>
-                </View>
-            </View>
+            </LinearGradient>
         </Animated.View>
     );
 }
-
-const { width } = Dimensions.get('window');
 
 const styles = StyleSheet.create({
     container: {
         position: 'absolute',
         top: 0,
-        left: 20,
-        right: 20,
+        alignSelf: 'center',
+        width: width - 32, // 16px padding on each side
         zIndex: 9999,
-        shadowColor: "#000",
+        shadowColor: "#4f46e5",
         shadowOffset: {
             width: 0,
-            height: 4,
+            height: 8,
         },
-        shadowOpacity: 0.30,
-        shadowRadius: 4.65,
-        elevation: 8,
+        shadowOpacity: 0.4,
+        shadowRadius: 12,
+        elevation: 10,
+    },
+    gradient: {
+        borderRadius: 16,
+        padding: 0,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+        overflow: 'hidden',
+    },
+    progressContainer: {
+        height: 2,
+        backgroundColor: 'rgba(255,255,255,0.1)',
+        width: '100%',
+    },
+    progressBar: {
+        height: '100%',
+        backgroundColor: '#6366f1',
     },
     content: {
-        backgroundColor: '#1f2937', // Dark gray/blue
-        borderRadius: 12,
-        padding: 16,
-        borderWidth: 1,
-        borderColor: '#374151',
-    },
-    header: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        marginBottom: 12,
-    },
-    title: {
-        color: '#9ca3af',
-        fontSize: 12,
-        fontWeight: '600',
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-    },
-    time: {
-        color: '#6b7280',
-        fontSize: 12,
-    },
-    details: {
         flexDirection: 'row',
         alignItems: 'center',
-        marginBottom: 16,
+        padding: 16,
     },
-    avatarPlaceholder: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        backgroundColor: '#4f46e5',
+    iconContainer: {
+        position: 'relative',
+        marginRight: 14,
+    },
+    avatarGradient: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
         justifyContent: 'center',
         alignItems: 'center',
-        marginRight: 12,
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 3,
     },
     avatarText: {
         color: '#ffffff',
-        fontSize: 18,
+        fontSize: 20,
         fontWeight: 'bold',
+    },
+    onlineBadge: {
+        position: 'absolute',
+        bottom: 0,
+        right: 0,
+        width: 14,
+        height: 14,
+        borderRadius: 7,
+        backgroundColor: '#22c55e',
+        borderWidth: 2,
+        borderColor: '#1e1b4b',
     },
     textContainer: {
         flex: 1,
+        justifyContent: 'center',
+    },
+    inviteTitle: {
+        color: '#818cf8',
+        fontSize: 10,
+        fontWeight: '800',
+        letterSpacing: 1,
+        marginBottom: 2,
     },
     senderName: {
         color: '#ffffff',
         fontSize: 16,
-        fontWeight: 'bold',
+        fontWeight: '700',
         marginBottom: 2,
     },
+    queueRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
     queueName: {
-        color: '#d1d5db',
-        fontSize: 14,
+        color: '#94a3b8',
+        fontSize: 13,
+        fontWeight: '500',
     },
     actions: {
         flexDirection: 'row',
-        gap: 12,
-    },
-    button: {
-        flex: 1,
-        paddingVertical: 10,
-        borderRadius: 8,
         alignItems: 'center',
-        justifyContent: 'center',
-    },
-    acceptButton: {
-        backgroundColor: '#22c55e', // Green
+        gap: 12,
+        marginLeft: 8,
     },
     declineButton: {
-        backgroundColor: '#374151', // Gray
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: 'rgba(255,255,255,0.1)',
+        justifyContent: 'center',
+        alignItems: 'center',
         borderWidth: 1,
-        borderColor: '#4b5563',
+        borderColor: 'rgba(255,255,255,0.05)',
     },
-    acceptText: {
-        color: '#ffffff',
-        fontWeight: '600',
-        fontSize: 14,
+    acceptButton: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        shadowColor: "#22c55e",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 6,
     },
-    declineText: {
-        color: '#d1d5db',
-        fontWeight: '600',
-        fontSize: 14,
+    acceptGradient: {
+        width: '100%',
+        height: '100%',
+        borderRadius: 24,
+        justifyContent: 'center',
+        alignItems: 'center',
     },
 });
