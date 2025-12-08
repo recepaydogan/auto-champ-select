@@ -1,7 +1,6 @@
-import React from 'react';
-import { View, Text, StyleSheet, Image } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ImageBackground, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Button, Avatar } from '@rneui/themed';
 import { Session } from '@supabase/supabase-js';
 import { DesktopStatus } from '../lib/lcuBridge';
 
@@ -12,58 +11,59 @@ interface DashboardProps {
     onSignOut: () => void;
 }
 
-export default function Dashboard({ session, desktopStatus, onCreateLobby, onSignOut }: DashboardProps) {
+const BG_URI = 'https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/assets/static_queue_delay_bg.jpg';
+const GOLD = '#c7b37b';
+const OFFWHITE = '#e8e2cf';
+
+export default function Dashboard({ desktopStatus, onCreateLobby, onSignOut }: DashboardProps) {
+    const [clock, setClock] = useState(() => new Date());
+
+    useEffect(() => {
+        const id = setInterval(() => setClock(new Date()), 1000);
+        return () => clearInterval(id);
+    }, []);
+
+    const timeStr = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const connected = !!desktopStatus?.lcuConnected;
+    const headlineText = connected ? 'YOU\'RE ALL SET!' : 'OPEN LEAGUE CLIENT';
+    const subheadText = connected
+        ? 'Wait for your friends to invite you, or create a new lobby'
+        : 'Open the League client on your desktop to create or join a lobby.';
+
     return (
         <SafeAreaView style={styles.safeArea}>
-        <View style={styles.container}>
-            <View style={styles.header}>
-                <Text style={styles.title}>Dashboard</Text>
-                <View style={styles.statusContainer}>
-                    <View style={[styles.statusDot, desktopStatus.lcuConnected ? styles.connected : styles.disconnected]} />
-                    <Text style={styles.statusText}>
-                        {desktopStatus.lcuConnected ? 'League Client Connected' : 'Waiting for League Client...'}
+            <ImageBackground source={{ uri: BG_URI }} style={styles.bg} resizeMode="cover">
+                <View style={styles.overlay} />
+                <View style={styles.topRow}>
+                    <Text style={styles.time}>{timeStr}</Text>
+                    <Text style={[styles.status, connected ? styles.statusOk : styles.statusWarn]}>
+                        {connected ? 'Connected' : 'Waiting for client'}
                     </Text>
                 </View>
-            </View>
 
-            <View style={styles.content}>
-                <View style={styles.profileCard}>
-                    <Avatar
-                        size={80}
-                        rounded
-                        title={session.user.email?.substring(0, 2).toUpperCase()}
-                        containerStyle={{ backgroundColor: '#3d4db7' }}
-                    />
-                    <Text style={styles.email}>{session.user.email}</Text>
+                <View style={styles.center}>
+                    <Text style={styles.headline}>{headlineText}</Text>
+                    <Text style={styles.subhead}>{subheadText}</Text>
                 </View>
 
-                <View style={styles.actionContainer}>
-                    <Button
-                        title="Create Lobby"
+                <View style={styles.footer}>
+                    <TouchableOpacity
+                        style={[styles.primaryButton, !connected && styles.disabledButton]}
+                        activeOpacity={0.9}
+                        disabled={!connected}
                         onPress={onCreateLobby}
-                        disabled={!desktopStatus.lcuConnected}
-                        buttonStyle={styles.createButton}
-                        containerStyle={styles.buttonContainer}
-                        icon={{
-                            name: 'gamepad',
-                            type: 'font-awesome',
-                            size: 20,
-                            color: 'white',
-                        }}
-                    />
+                    >
+                        <Text style={styles.primaryLabel}>CREATE NEW LOBBY</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={styles.secondaryButton}
+                        activeOpacity={0.85}
+                        onPress={onSignOut}
+                    >
+                        <Text style={styles.secondaryLabel}>Sign Out</Text>
+                    </TouchableOpacity>
                 </View>
-            </View>
-
-            <View style={styles.footer}>
-                <Button
-                    title="Sign Out"
-                    onPress={onSignOut}
-                    type="outline"
-                    buttonStyle={styles.signOutButton}
-                    titleStyle={styles.signOutText}
-                />
-            </View>
-            </View>
+            </ImageBackground>
         </SafeAreaView>
     );
 }
@@ -71,84 +71,92 @@ export default function Dashboard({ session, desktopStatus, onCreateLobby, onSig
 const styles = StyleSheet.create({
     safeArea: {
         flex: 1,
-        backgroundColor: '#0a0a0a',
+        backgroundColor: '#0a1a24',
     },
-    container: {
+    bg: {
         flex: 1,
-        backgroundColor: '#0a0a0a',
-        padding: 20,
     },
-    header: {
-        marginTop: 40,
-        marginBottom: 30,
-        alignItems: 'center',
+    overlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(0, 12, 20, 0.55)',
     },
-    title: {
-        fontSize: 32,
-        fontWeight: 'bold',
-        color: '#ffffff',
-        marginBottom: 10,
-    },
-    statusContainer: {
+    topRow: {
         flexDirection: 'row',
+        justifyContent: 'space-between',
         alignItems: 'center',
-        backgroundColor: '#171717',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 20,
+        paddingHorizontal: 20,
+        paddingTop: 12,
     },
-    statusDot: {
-        width: 8,
-        height: 8,
-        borderRadius: 4,
-        marginRight: 8,
+    time: {
+        color: OFFWHITE,
+        fontSize: 16,
+        fontWeight: '700',
     },
-    connected: {
-        backgroundColor: '#22c55e',
-    },
-    disconnected: {
-        backgroundColor: '#f59e0b',
-    },
-    statusText: {
-        color: '#a3a3a3',
+    status: {
         fontSize: 12,
+        fontWeight: '600',
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 12,
+        overflow: 'hidden',
     },
-    content: {
+    statusOk: {
+        color: '#0b0c0d',
+        backgroundColor: '#c7f2c4',
+    },
+    statusWarn: {
+        color: '#241b0f',
+        backgroundColor: '#f7e0a3',
+    },
+    center: {
         flex: 1,
         alignItems: 'center',
         justifyContent: 'center',
+        paddingHorizontal: 30,
     },
-    profileCard: {
-        alignItems: 'center',
-        marginBottom: 40,
+    headline: {
+        color: OFFWHITE,
+        fontSize: 26,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+        textAlign: 'center',
+        marginBottom: 12,
     },
-    email: {
-        color: '#ffffff',
-        fontSize: 18,
-        marginTop: 12,
-        fontWeight: '500',
-    },
-    actionContainer: {
-        width: '100%',
-        paddingHorizontal: 20,
-    },
-    createButton: {
-        backgroundColor: '#4f46e5',
-        paddingVertical: 15,
-        borderRadius: 12,
-    },
-    buttonContainer: {
-        width: '100%',
+    subhead: {
+        color: '#d6c7a3',
+        fontSize: 16,
+        lineHeight: 22,
+        textAlign: 'center',
     },
     footer: {
-        marginBottom: 20,
+        paddingHorizontal: 20,
+        paddingBottom: 30,
     },
-    signOutButton: {
-        borderColor: '#ef4444',
-        borderRadius: 12,
-        paddingVertical: 12,
+    primaryButton: {
+        borderWidth: 1,
+        borderColor: GOLD,
+        backgroundColor: 'rgba(10, 16, 24, 0.85)',
+        paddingVertical: 14,
+        borderRadius: 6,
+        alignItems: 'center',
+        marginBottom: 14,
     },
-    signOutText: {
-        color: '#ef4444',
+    disabledButton: {
+        opacity: 0.5,
+    },
+    primaryLabel: {
+        color: GOLD,
+        fontSize: 16,
+        fontWeight: '800',
+        letterSpacing: 0.3,
+    },
+    secondaryButton: {
+        alignItems: 'center',
+        paddingVertical: 10,
+    },
+    secondaryLabel: {
+        color: '#cfd8e3',
+        fontSize: 14,
+        fontWeight: '600',
     },
 });

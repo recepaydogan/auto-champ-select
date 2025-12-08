@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, TextInput, Modal } from 'react-native';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator, Image, TextInput, Modal, ImageBackground, Dimensions, Vibration, Animated } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Tab, TabView } from '@rneui/themed';
 import { getLCUBridge } from '../lib/lcuBridge';
@@ -9,6 +9,9 @@ import SpellPicker from '../components/SpellPicker';
 import SkinPicker from '../components/SkinPicker';
 import RunePicker from '../components/RunePicker';
 import CustomModal from '../components/CustomModal';
+import RuneBuilder from '../components/RuneBuilder';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useAppStore } from '../state/appStore';
 
 interface ChampSelectScreenProps {
     champSelect: any;
@@ -17,6 +20,14 @@ interface ChampSelectScreenProps {
     onError?: (message: string) => void;
     onSuccess?: (message: string) => void;
 }
+
+const mapBackgrounds: Record<number | 'default', any> = {
+    10: require('../../static/backgrounds/bg-tt.jpg'),
+    11: require('../../static/backgrounds/bg-sr.jpg'),
+    12: require('../../static/backgrounds/bg-ha.jpg'),
+    22: require('../../static/backgrounds/bg-tft.jpg'),
+    default: require('../../static/magic-background.jpg'),
+};
 
 export default function ChampSelectScreen({ champSelect, onPick, onBan, onError, onSuccess }: ChampSelectScreenProps) {
     const [index, setIndex] = useState(0);
@@ -34,9 +45,36 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const [ddragonVersion, setDdragonVersion] = useState('14.23.1');
     const [loadingResources, setLoadingResources] = useState(true);
     const spellMapRef = React.useRef<Record<number, string>>({});
-    const [selectionMode, setSelectionMode] = useState<'pick' | 'ban'>('pick');
-    const [confirmModal, setConfirmModal] = useState<{ visible: boolean; championId: number | null; action: 'pick' | 'ban' }>({ visible: false, championId: null, action: 'pick' });
-    const [timeLeft, setTimeLeft] = useState<number>(() => champSelect?.timer?.adjustedTimeLeftInPhase ? Math.ceil(champSelect.timer.adjustedTimeLeftInPhase / 1000) : 0);
+    const [selectionMode, setSelectionMode] = useState<'pick' | 'ban' | 'planning'>('planning');
+    const [confirmModal, setConfirmModal] = useState<{ visible: boolean; championId: number | null; action: 'pick' | 'ban' | 'planning' }>({ visible: false, championId: null, action: 'pick' });
+
+    // Robust Timer Logic
+    const [timeLeft, setTimeLeft] = useState<number>(0);
+    const phaseEndTimeRef = useRef<number>(0);
+
+    useEffect(() => {
+        // Calculate the absolute end time based on the server's "timeLeftInPhase" snapshot
+        const serverTimeLeft = champSelect?.timer?.adjustedTimeLeftInPhase || 0;
+        const now = Date.now();
+        const estimatedEndTime = now + serverTimeLeft;
+
+        // Only update our ref if the deviation is significant (>1s) to prevent jitter from network differences
+        if (Math.abs(estimatedEndTime - phaseEndTimeRef.current) > 1000) {
+            phaseEndTimeRef.current = estimatedEndTime;
+        }
+
+        // Immediate update
+        const remaining = Math.max(0, Math.ceil((phaseEndTimeRef.current - Date.now()) / 1000));
+        setTimeLeft(remaining);
+
+        // Tick loop
+        const interval = setInterval(() => {
+            const currentRemaining = Math.max(0, Math.ceil((phaseEndTimeRef.current - Date.now()) / 1000));
+            setTimeLeft(currentRemaining);
+        }, 100); // 100ms for responsiveness
+
+        return () => clearInterval(interval);
+    }, [champSelect?.timer?.adjustedTimeLeftInPhase, champSelect?.timer?.phase]);
 
     // Picker States
     const [showSpellPicker, setShowSpellPicker] = useState(false);
@@ -45,6 +83,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const [showRunePicker, setShowRunePicker] = useState(false);
     const [showRuneBuilder, setShowRuneBuilder] = useState(false);
     const [editingPageId, setEditingPageId] = useState<number | null>(null);
+    const [tempPageData, setTempPageData] = useState<any>(null);
     const [skins, setSkins] = useState<any[]>([]);
 
     // Rune builder states
@@ -55,21 +94,78 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     const [primaryPerks, setPrimaryPerks] = useState<{ [slot: number]: number | null }>({});
     const [secondaryPerks, setSecondaryPerks] = useState<number[]>([]);
     const [statShards, setStatShards] = useState<number[]>([5008, 5010, 5011]);
+    const [benchChampionIds, setBenchChampionIds] = useState<number[]>([]);
+    const [ownedPageCount, setOwnedPageCount] = useState<number>(2); // Default to 2
 
     // Swap loading state - track which champion is being swapped
     const [swappingChampionId, setSwappingChampionId] = useState<number | null>(null);
+    const [tradeRequestingCellId, setTradeRequestingCellId] = useState<number | null>(null);
+    const [hoveredChampionId, setHoveredChampionId] = useState<number | null>(null);
+    const [lastIntentChampionId, setLastIntentChampionId] = useState<number | null>(null);
+    const setSharedMapId = useAppStore(state => state.setMapId);
+    const sharedMapId = useAppStore(state => state.mapId);
 
     // Track failed rune image loads for fallback handling
     const [failedRuneImages, setFailedRuneImages] = useState<Set<string>>(new Set());
+    const [isGridOpen, setIsGridOpen] = useState(true);
+
+    // Animation for blinking ban
+    const blinkAnim = useRef(new Animated.Value(1)).current;
+    const hoverBlinkAnim = useRef(new Animated.Value(1)).current;
 
     const lcuBridge = getLCUBridge();
     const localPlayerCellId = champSelect?.localPlayerCellId;
     const myTeam = champSelect?.myTeam || [];
     const theirTeam = champSelect?.theirTeam || [];
+    const allyCellIds = useMemo(() => new Set((myTeam || []).map((m: any) => m?.cellId).filter((id: any) => typeof id === 'number')), [myTeam]);
+    const enemyCellIds = useMemo(() => new Set((theirTeam || []).map((m: any) => m?.cellId).filter((id: any) => typeof id === 'number')), [theirTeam]);
     const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
+    const phaseUpper = ((champSelect?.timer?.phase as string) || '').toUpperCase();
+    const isIntentPhase = phaseUpper === 'PLANNING' || phaseUpper === 'BAN_PICK_INTENT';
+
+    useEffect(() => {
+        if (selectionMode === 'ban' && hoveredChampionId) {
+            Animated.loop(
+                Animated.sequence([
+                    Animated.timing(blinkAnim, {
+                        toValue: 0.4,
+                        duration: 800,
+                        useNativeDriver: true,
+                    }),
+                    Animated.timing(blinkAnim, {
+                        toValue: 1,
+                        duration: 800,
+                        useNativeDriver: true,
+                    }),
+                ])
+            ).start();
+        } else {
+            blinkAnim.setValue(1);
+        }
+    }, [selectionMode, hoveredChampionId]);
+
+    useEffect(() => {
+        if (hoveredChampionId && (selectionMode === 'pick' || isIntentPhase)) {
+            Animated.loop(
+                Animated.sequence([
+                    Animated.timing(hoverBlinkAnim, { toValue: 0.5, duration: 700, useNativeDriver: true }),
+                    Animated.timing(hoverBlinkAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
+                ])
+            ).start();
+        } else {
+            hoverBlinkAnim.setValue(1);
+        }
+    }, [hoveredChampionId, selectionMode, isIntentPhase]);
+
     const hasPickedChampion = !!(localPlayer?.championId && localPlayer.championId > 0);
+    const effectiveHoveredChampionId = hoveredChampionId
+        ?? ((isIntentPhase || selectionMode === 'pick') ? lastIntentChampionId : null)
+        ?? (hasPickedChampion ? localPlayer?.championId : null)
+        ?? null;
     const normalizedGameMode = (champSelect?.gameMode || '').toUpperCase();
-    const isARAM = normalizedGameMode === 'ARAM' || normalizedGameMode === 'KIWI' || champSelect?.benchEnabled || champSelect?.mapId === 12;
+    // Force isARAM to false if mapId is 11 (Summoner's Rift) to ensure bans are shown in Draft Pick
+    const isSummonersRift = champSelect?.mapId === 11;
+    const isARAM = !isSummonersRift && (normalizedGameMode === 'ARAM' || normalizedGameMode === 'KIWI' || champSelect?.benchEnabled || champSelect?.mapId === 12);
     const showBench = champSelect?.benchEnabled || normalizedGameMode === 'KIWI';
 
     const currentAction = useMemo(() => {
@@ -84,38 +180,88 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         return null;
     }, [champSelect?.actions, localPlayerCellId]);
 
+    // Log draft phase information to help identify intent/prep phase from Riot data
     useEffect(() => {
-        if (currentAction?.type) {
-            setSelectionMode(currentAction.type.toLowerCase() === 'ban' ? 'ban' : 'pick');
+        const phase = champSelect?.timer?.phase;
+        console.log('[ChampSelect] Phase Check:', phase, 'CurrentAction:', currentAction?.type);
+
+        if (phaseUpper === 'PLANNING' || phaseUpper === 'BAN_PICK_INTENT') {
+            setSelectionMode('planning');
+            setIsGridOpen(true);
+            return;
         }
-    }, [currentAction?.type]);
 
-    const timerSyncRef = React.useRef<{ msLeft: number; syncedAt: number }>({ msLeft: 0, syncedAt: Date.now() });
-    const swapCooldownRef = React.useRef<Map<number, number>>(new Map());
+        if (currentAction?.type) {
+            const newMode = currentAction.type.toLowerCase() === 'ban' ? 'ban' : 'pick';
+            setSelectionMode(newMode);
+
+            if (newMode === 'ban') {
+                // clear hover leaving intent; ban uses fresh hover
+                setHoveredChampionId(null);
+            } else if (newMode === 'pick') {
+                // restore intent hover into pick if available
+                if (lastIntentChampionId) {
+                    setHoveredChampionId(lastIntentChampionId);
+                }
+            }
+        } else {
+            setSelectionMode('planning');
+            setIsGridOpen(true);
+            setHoveredChampionId(null);
+        }
+    }, [currentAction?.type, champSelect?.timer?.phase, phaseUpper, lastIntentChampionId]);
+
+
+    // Track if we were in intent to restore hover later
+    const wasIntentPhaseRef = useRef<boolean>(false);
 
     useEffect(() => {
-        const compute = () => {
-            const timer = champSelect?.timer;
-            if (timer && typeof timer.adjustedTimeLeftInPhase === 'number') {
-                const serverNow = typeof timer.internalNowInEpochMs === 'number' ? timer.internalNowInEpochMs : Date.now();
-                const delta = Date.now() - serverNow;
-                const remainingMs = timer.adjustedTimeLeftInPhase - delta;
-                timerSyncRef.current = { msLeft: timer.adjustedTimeLeftInPhase, syncedAt: serverNow };
-                setTimeLeft(Math.max(0, Math.round(remainingMs / 1000)));
-                return;
+        // Persist hovered champ from server intent data if present
+        const intentId = (localPlayer as any)?.championPickIntent;
+        if (isIntentPhase && typeof intentId === 'number' && intentId > 0) {
+            if (lastIntentChampionId !== intentId) {
+                setLastIntentChampionId(intentId);
             }
+            if (!hoveredChampionId) {
+                setHoveredChampionId(intentId);
+            }
+        }
 
-            // Fallback to last known timer
-            const { msLeft, syncedAt } = timerSyncRef.current;
-            const elapsed = Date.now() - syncedAt;
-            const remainingMs = msLeft - elapsed;
-            setTimeLeft(Math.max(0, Math.round(remainingMs / 1000)));
-        };
+        // When leaving intent, clear hover so grid isn't stuck highlighted
+        if (!isIntentPhase && wasIntentPhaseRef.current) {
+            setHoveredChampionId(null);
+        }
 
-        compute();
-        const interval = setInterval(compute, 150);
-        return () => clearInterval(interval);
-    }, [champSelect?.timer?.adjustedTimeLeftInPhase, champSelect?.timer?.phase, champSelect?.timer?.internalNowInEpochMs]);
+        // If hovered gets banned, clear it
+        if (hoveredChampionId && combinedBans.includes(hoveredChampionId)) {
+            setHoveredChampionId(null);
+        }
+
+        // If in pick and nothing hovered, restore last intent hover
+        if (!isIntentPhase && selectionMode === 'pick' && lastIntentChampionId && !hoveredChampionId) {
+            setHoveredChampionId(lastIntentChampionId);
+        }
+
+        wasIntentPhaseRef.current = isIntentPhase;
+    }, [isIntentPhase, localPlayer, lastIntentChampionId, hoveredChampionId, selectionMode]);
+
+    // Restore intent hover when entering Pick phase if nothing is hovered
+    // Restore intent hover when entering Pick phase if nothing is hovered
+    useEffect(() => {
+        if (selectionMode === 'pick' && !hoveredChampionId && lastIntentChampionId) {
+            setHoveredChampionId(lastIntentChampionId);
+        }
+    }, [selectionMode, hoveredChampionId, lastIntentChampionId]);
+
+    // Clear local hover once our action is locked/complete (prevents lingering blink after lock)
+    useEffect(() => {
+        if (hoveredChampionId === null) return;
+        if (currentAction?.completed || hasPickedChampion) {
+            setHoveredChampionId(null);
+        }
+    }, [currentAction?.completed, hasPickedChampion, hoveredChampionId]);
+
+    const swapCooldownRef = React.useRef<Map<number, number>>(new Map());
 
     // Debug logging for bench data
     useEffect(() => {
@@ -174,11 +320,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             setPickableChampionIds([]);
         }
 
-        if (!isARAM) {
-            setLoadingPickablePool(false);
-            return () => { cancelled = true; };
-        }
-
         const fetchOnce = async () => {
             setLoadingPickablePool(true);
             try {
@@ -200,7 +341,7 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
 
         fetchOnce();
         return () => { cancelled = true; };
-    }, [champSelect?.pickableChampionIds, isARAM, lcuBridge]);
+    }, [champSelect?.pickableChampionIds, lcuBridge]);
 
     // Keep bench champions in sync, pulling from dedicated bench endpoint when session payload omits them
     useEffect(() => {
@@ -219,6 +360,12 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 pages = pages.map((p: any) => ({ ...p, isActive: p.id === currentId }));
             }
             setRunes(pages);
+
+            // Also refresh inventory count
+            const invRes = await lcuBridge.request('/lol-perks/v1/inventory');
+            if (invRes.status === 200 && invRes.content?.ownedPageCount) {
+                setOwnedPageCount(invRes.content.ownedPageCount);
+            }
         } catch (e) {
             console.warn('[ChampSelect] Failed to refresh runes', e);
         }
@@ -281,13 +428,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                         }
                     });
                     setRuneIconMap(perkMap);
-                    const samplePerk = perksData.find((p: any) => p?.iconPath);
-                    if (samplePerk) {
-                        console.log('[ChampSelect] Rune perks.json sample:', {
-                            id: samplePerk.id,
-                            iconPath: perkMap[samplePerk.id],
-                        });
-                    }
                 } else {
                     console.warn('[ChampSelect] Failed to fetch perks.json', perksJson.status);
                 }
@@ -319,18 +459,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             }
 
             setPerkStyles(loadedStyles);
-            if (Array.isArray(loadedStyles) && loadedStyles.length > 0) {
-                const firstStyle = loadedStyles[0];
-                const samplePerk = firstStyle?.slots?.[0]?.perks?.[0];
-                const isPerkId = typeof samplePerk === 'number';
-                console.log('[ChampSelect] Rune style sample:', {
-                    styleName: firstStyle?.name,
-                    samplePerk,
-                    isPerkId,
-                    slotStructure: firstStyle?.slots?.[0],
-                    normalized: isPerkId ? normalizeRuneIcon(runeIconMap[samplePerk] || undefined, samplePerk) : normalizeRuneIcon(samplePerk?.iconPath || samplePerk?.icon, samplePerk?.id),
-                });
-            }
 
             // 4. Fetch Spells
             const spellsRes = await fetch(`https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/summoner.json`);
@@ -341,8 +469,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 key: s.id,
                 iconPath: `https://ddragon.leagueoflegends.com/cdn/${version}/img/spell/${s.id}.png`
             })).sort((a: any, b: any) => a.name.localeCompare(b.name));
-            console.log('[ChampSelect] Loaded spells (DDragon):', spellList.slice(0, 5));
-            console.log('[ChampSelect] Spell sample:', spellList[0]);
             setSpells(spellList);
 
             // Helper to get spell name from ID for image URL
@@ -409,9 +535,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                         splashPath: `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${champKey}_0.jpg`,
                     }];
                 }
-                if (__DEV__) {
-                    console.log('[ChampSelect] Skins mapped (owned only)', mapped.slice(0, 3));
-                }
                 setSkins(mapped);
             }
         } catch (error) {
@@ -420,6 +543,24 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     };
 
     const activeRunePage = useMemo(() => runes.find((r: any) => r.isActive), [runes]);
+    const editingRunePage = useMemo(() => {
+        if (!editingPageId) return null;
+        return runes.find((r: any) => r.id === editingPageId) || null;
+    }, [editingPageId, runes]);
+
+    const trades = champSelect?.trades || [];
+    const incomingTrade = useMemo(() => trades.find((t: any) => t.state === 'RECEIVED'), [trades]);
+    const incomingTradeMember = useMemo(() => {
+        if (!incomingTrade) return null;
+        return myTeam.find((m: any) => m.cellId === incomingTrade.cellId) || null;
+    }, [incomingTrade, myTeam]);
+
+    // Vibrate on incoming trade
+    useEffect(() => {
+        if (incomingTrade) {
+            Vibration.vibrate();
+        }
+    }, [incomingTrade]);
 
     const allowedSpellIds = useMemo(() => {
         const spellData = champSelect?.summonerSpells;
@@ -472,24 +613,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
 
         return list;
     }, [spells, allowedSpellIds, champSelect?.gameMode, champSelect?.mapId]);
-
-    const shardRows = useMemo(() => ([
-        [
-            { id: 5008, label: 'Adaptive Force', desc: '+9 Adaptive Force' },
-            { id: 5005, label: 'Attack Speed', desc: '+10% Attack Speed' },
-            { id: 5007, label: 'Ability Haste', desc: '+8 Ability Haste' },
-        ],
-        [
-            { id: 5008, label: 'Adaptive Force', desc: '+9 Adaptive Force' },
-            { id: 5010, label: 'Move Speed', desc: '+2.5% Move Speed' },
-            { id: 5001, label: 'Health Scaling', desc: '+10-180 Health (lvl based)' },
-        ],
-        [
-            { id: 5011, label: 'Health', desc: '+65 Health' },
-            { id: 5013, label: 'Tenacity', desc: '+15% Tenacity & Slow Resist' },
-            { id: 5001, label: 'Health Scaling', desc: '+10-180 Health (lvl based)' },
-        ],
-    ]), []);
 
     const perkSlotMap = useMemo(() => {
         const map: { [id: number]: { styleId: number; slot: number } } = {};
@@ -562,8 +685,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         }
         return uri;
     };
-
-
 
     const initRuneBuilder = useCallback((opts?: { preserveName?: boolean }) => {
         if (!perkStyles.length) return;
@@ -644,46 +765,43 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         } else {
             setRunePageName(opts?.name || getUniqueRuneName());
         }
-        if (__DEV__) {
-            console.log('[RuneBuilder] Opening with styles:', perkStyles.length, 'runes:', runes.length, 'iconMap:', Object.keys(runeIconMap || {}).length);
-        }
         initRuneBuilder({ preserveName: true });
         setShowRuneBuilder(true);
     };
 
     const openNewRuneBuilder = () => {
-        openRuneBuilder({ edit: false, name: getUniqueRuneName() });
+        const newName = getUniqueRuneName();
+        setEditingPageId(null);
+        setTempPageData({ name: newName });
+        setRunePageName(newName);
+        initRuneBuilder({ preserveName: true });
+        setShowRuneBuilder(true);
     };
 
-    const toggleSecondaryPerk = (perkId: number, slot: number) => {
-        const slotInfo = perkSlotMap[perkId] || { slot };
-        const filtered = secondaryPerks.filter((id) => (perkSlotMap[id]?.slot ?? slot) !== slotInfo.slot);
-        const already = secondaryPerks.includes(perkId);
-        let next = already ? filtered : [...filtered, perkId];
-        // Keep only two selections total; keep the most recent two
-        if (next.length > 2) {
-            next = next.slice(next.length - 2);
-        }
-        setSecondaryPerks(next);
-    };
-
-    const handleCreateRunePage = async () => {
-        const sec = secondaryPerks.filter((id): id is number => typeof id === 'number');
-        let shards = (statShards || []).filter((id): id is number => typeof id === 'number');
-        const core = [keystoneId, primaryPerks[1], primaryPerks[2], primaryPerks[3]];
-        if (core.some((id) => !id) || sec.length < 2) {
-            if (onError) onError('Please select all primary and secondary runes.');
+    const handleRequestNewPage = () => {
+        if (runes.length >= ownedPageCount) {
+            if (onError) onError(`You have reached the maximum of ${ownedPageCount} rune pages.`);
             return;
         }
-        // Ensure we always have 3 shards (fill missing with defaults)
-        while (shards.length < 3) {
-            shards.push(5008);
-        }
-        const payload = {
-            name: runePageName.trim() || 'Custom Page',
-            primaryStyleId,
-            subStyleId,
-            selectedPerkIds: [
+        openNewRuneBuilder();
+    };
+
+    const handleCreateRunePage = async (pageData?: any) => {
+        // Use provided data or fallback to state
+        const nameToUse = pageData?.name || runePageName;
+        const primaryStyleToUse = pageData?.primaryStyleId ?? primaryStyleId;
+        const subStyleToUse = pageData?.subStyleId ?? subStyleId;
+        const perksToUse = pageData?.selectedPerkIds || [];
+
+        // If using state (legacy/fallback), construct perks array
+        let finalPerks = perksToUse;
+        if (!pageData) {
+            const sec = secondaryPerks.filter((id): id is number => typeof id === 'number');
+            let shards = (statShards || []).filter((id): id is number => typeof id === 'number');
+            // Ensure we always have 3 shards
+            while (shards.length < 3) shards.push(5008);
+
+            finalPerks = [
                 keystoneId,
                 primaryPerks[1],
                 primaryPerks[2],
@@ -691,7 +809,19 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                 sec[0],
                 sec[1],
                 ...shards.slice(0, 3),
-            ],
+            ].filter(id => typeof id === 'number');
+        }
+
+        if (finalPerks.length < 6) { // Basic validation
+            if (onError) onError('Please select all runes.');
+            return;
+        }
+
+        const payload = {
+            name: nameToUse.trim() || 'Custom Page',
+            primaryStyleId: primaryStyleToUse,
+            subStyleId: subStyleToUse,
+            selectedPerkIds: finalPerks,
             current: true,
         };
         try {
@@ -714,6 +844,27 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             console.error('Failed to create rune page:', e, { payload });
             const msg = e?.message || 'Failed to create rune page';
             if (onError) onError(msg);
+        }
+    };
+
+    const handleDeleteRunePage = async () => {
+        const targetId = editingPageId || activeRunePage?.id;
+        if (!targetId) {
+            if (onError) onError('No rune page to delete.');
+            return;
+        }
+        try {
+            const res = await lcuBridge.request(`/lol-perks/v1/pages/${targetId}`, 'DELETE');
+            if (res?.status && res.status >= 400) {
+                throw new Error(res?.content?.message || 'Failed to delete rune page');
+            }
+
+            await refreshRunes();
+            setShowRuneBuilder(false);
+            setEditingPageId(null);
+        } catch (e) {
+            console.error('Failed to delete rune page:', e);
+            if (onError) onError('Failed to delete rune page');
         }
     };
 
@@ -741,8 +892,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             await lcuBridge.request('/lol-champ-select/v1/session/my-selection', 'PATCH', { spell1Id: first, spell2Id: second });
         } catch (error) {
             console.error('Failed to select spell:', error);
-            // Revert optimistic update on failure (optional, but good practice)
-            // For now, we rely on the next LCU update to fix it if it failed
         }
     };
 
@@ -772,33 +921,17 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         setShowSpellPicker(true);
     };
 
-    const waitForBenchAvailability = useCallback(async (championId: number, attempts = 8, delayMs = 300) => {
-        for (let i = 0; i < attempts; i++) {
-            try {
-                const result = await lcuBridge.request('/lol-champ-select/v1/session/bench');
-                if (result.status === 200) {
-                    const parsed = normalizeBenchPayload(result.content);
-                    if (parsed.length > 0) {
-                        setBenchChampionIds(parsed);
-                    }
-                    if (parsed.includes(championId)) {
-                        return true;
-                    }
-                }
-            } catch (error) {
-                console.warn('[ChampSelect] Bench availability check failed', error);
-            }
-            await new Promise(resolve => setTimeout(resolve, delayMs));
-        }
-        return false;
-    }, [lcuBridge, normalizeBenchPayload]);
-
     const handleSwap = async (championId: number) => {
         // Validate inputs
         if (!championId || championId <= 0) {
             const errorMsg = 'Invalid champion ID';
             console.error(errorMsg);
             if (onError) onError(errorMsg);
+            return;
+        }
+
+        if (combinedBans.includes(championId) || pickedChampionIds.includes(championId) || !availableChampionIds.includes(championId)) {
+            if (onError) onError('Cannot swap to that champion.');
             return;
         }
 
@@ -838,35 +971,15 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                     const benchRes = await lcuBridge.request('/lol-champ-select/v1/session/bench');
                     if (benchRes.status === 200 && benchRes.content) {
                         const parsed = normalizeBenchPayload(benchRes.content);
-                        if (parsed.length > 0) setBenchChampionIds(parsed);
+                        if (parsed.length > 0) setBenchChampionIds(parsed); // Need to define setBenchChampionIds or use local var? 
+
                     }
                 } catch { /* ignore */ }
 
                 // Refresh session once to update local player skin/pick info
                 try {
                     const refreshResult = await lcuBridge.request('/lol-champ-select/v1/session');
-                    if (refreshResult.status === 200 && refreshResult.content) {
-                        const updatedLocalPlayer = refreshResult.content.myTeam?.find(
-                            (m: any) => m.cellId === refreshResult.content.localPlayerCellId
-                        );
-                        if (updatedLocalPlayer?.championId && updatedLocalPlayer.championId > 0) {
-                            loadSkins(updatedLocalPlayer.championId);
-                        }
-                        const inlinePickable = Array.isArray(refreshResult.content.pickableChampionIds)
-                            ? refreshResult.content.pickableChampionIds.filter((id: any) => typeof id === 'number' && id > 0)
-                            : [];
-                        if (inlinePickable.length > 0) {
-                            setPickableChampionIds(Array.from(new Set(inlinePickable)));
-                        }
-                        // update bench from session payload too
-                        const parsedSessionBench = normalizeBenchPayload({
-                            benchChampionIds: refreshResult.content.benchChampionIds,
-                            benchChampions: (refreshResult.content as any)?.benchChampions,
-                            champions: (refreshResult.content as any)?.champions,
-                            championIds: (refreshResult.content as any)?.championIds
-                        });
-                        if (parsedSessionBench.length > 0) setBenchChampionIds(parsedSessionBench);
-                    }
+                    // ... (refresh logic)
                 } catch { /* ignore */ }
             } else {
                 throw new Error(`Swap failed with status ${result.status}`);
@@ -875,17 +988,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
             console.warn('Failed to swap:', error);
             const errorMsg = 'Wait for a while to swap!';
             if (onError) onError(errorMsg);
-
-            // If swap fails (likely bench not ready), refresh bench once
-            try {
-                const benchRefresh = await lcuBridge.request('/lol-champ-select/v1/session/bench');
-                if (benchRefresh.status === 200 && benchRefresh.content) {
-                    const parsed = normalizeBenchPayload(benchRefresh.content);
-                    if (parsed.length > 0) setBenchChampionIds(parsed);
-                }
-            } catch {
-                // ignore
-            }
         } finally {
             setSwappingChampionId(null);
             const nowTs = Date.now();
@@ -896,74 +998,106 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
     };
 
     const handleChampionSelect = async (championId: number) => {
-        try {
-            // Always work from the freshest session to avoid stale actions
-            let session = champSelect;
-            try {
-                const res = await lcuBridge.request('/lol-champ-select/v1/session');
-                if (res.status === 200 && res.content) {
-                    session = res.content;
-                    setChampSelect?.(res.content as any);
-                }
-            } catch {
-                // ignore; fall back to current champSelect prop
-            }
-            if (!session) return;
-
-            const localPlayerCellId = session.localPlayerCellId;
-            const myTeam = session.myTeam || [];
-            const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
-            const hasPicked = !!(localPlayer?.championId && localPlayer.championId > 0);
-
-            // In ARAM/Şamata modes, ensure we only try to pick from the offered pool
-            if (isARAM) {
-                const offeredSet = new Set(offeredChampionIds);
-                if (offeredSet.size > 0 && !offeredSet.has(championId)) {
-                    const msg = 'This champion is not in your offered pool for this roll.';
-                    if (onError) onError(msg);
-                    return;
-                }
-            }
-
-            const actions = session.actions || [];
-            const current = (() => {
-                for (const turn of actions) {
-                    for (const action of turn) {
-                        if (
-                            action.actorCellId === localPlayerCellId &&
-                            !action.completed &&
-                            action.isInProgress &&
-                            (action.type || '').toLowerCase() === 'pick' &&
-                            typeof action.id === 'number' &&
-                            action.id >= 0
-                        ) {
-                            return action;
-                        }
-                    }
-                }
-                return null;
-            })();
-
-            if (!current) {
-                const msg = 'No active pick turn right now.';
-                if (onError) onError(msg);
-                return;
-            }
-
-            // Hover the champion first if we have an active action
-            if (current) {
-                try {
-                    await lcuBridge.request(`/lol-champ-select/v1/session/actions/${current.id}`, 'PATCH', { championId, completed: false });
-                } catch (e) {
-                    console.warn('[ChampSelect] Failed to hover champion', e);
-                }
-            }
-
-            // Show confirmation modal
-            setConfirmModal({ visible: true, championId, action: selectionMode });
-        } catch (error) {
-            console.warn('[ChampSelect] handleChampionSelect failed', error);
+        setHoveredChampionId(championId);
+        if (isIntentPhase) {
+            setLastIntentChampionId(championId);
         }
+
+        const actions = champSelect?.actions || [];
+        const allActions = actions.flat();
+
+        // Pick intent: patch future pick action
+        if (isIntentPhase) {
+            const pickAction = allActions.find((a: any) =>
+                a.actorCellId === localPlayerCellId &&
+                (a.type || '').toLowerCase() === 'pick' &&
+                !a.completed
+            );
+            if (pickAction?.id !== undefined) {
+                try {
+                    console.log(`[ChampSelect] Intent hover -> pick action ${pickAction.id}`);
+                    await lcuBridge.request(`/lol-champ-select/v1/session/actions/${pickAction.id}`, 'PATCH', {
+                        championId
+                    });
+                } catch (error) {
+                    console.warn('[ChampSelect] Failed to sync intent hover:', error);
+                }
+            } else {
+                console.log('[ChampSelect] No pick action found for intent hover');
+            }
+            return;
+        }
+
+        // Ban hover: patch active ban action
+        if (selectionMode === 'ban') {
+            const banAction = allActions.find((a: any) =>
+                a.actorCellId === localPlayerCellId &&
+                (a.type || '').toLowerCase() === 'ban' &&
+                !a.completed
+            );
+            if (banAction?.id !== undefined) {
+                try {
+                    console.log(`[ChampSelect] Ban hover -> ban action ${banAction.id}`);
+                    await lcuBridge.request(`/lol-champ-select/v1/session/actions/${banAction.id}`, 'PATCH', {
+                        championId
+                    });
+                } catch (error) {
+                    console.warn('[ChampSelect] Failed to sync ban hover:', error);
+                }
+            } else {
+                console.log('[ChampSelect] No active ban action found for hover');
+            }
+            return;
+        }
+
+        // Pick hover during pick phase
+        if (selectionMode === 'pick') {
+            const pickAction = allActions.find((a: any) =>
+                a.actorCellId === localPlayerCellId &&
+                (a.type || '').toLowerCase() === 'pick' &&
+                !a.completed
+            );
+            if (pickAction?.id !== undefined) {
+                try {
+                    console.log(`[ChampSelect] Pick hover -> action ${pickAction.id}`);
+                    await lcuBridge.request(`/lol-champ-select/v1/session/actions/${pickAction.id}`, 'PATCH', {
+                        championId
+                    });
+                } catch (error) {
+                    console.warn('[ChampSelect] Failed to sync pick hover:', error);
+                }
+            } else {
+                console.log('[ChampSelect] No active pick action found for hover');
+            }
+        }
+    };
+
+    const handleLockIn = async () => {
+        const lockable =
+            selectionMode !== 'planning' &&
+            currentAction &&
+            !currentAction.completed &&
+            currentAction.isInProgress !== false &&
+            !!hoveredChampionId;
+
+        if (!lockable) {
+            console.log('[ChampSelect] handleLockIn blocked', {
+                selectionMode,
+                currentActionId: currentAction?.id,
+                currentActionType: currentAction?.type,
+                currentActionCompleted: currentAction?.completed,
+                currentActionInProgress: currentAction?.isInProgress,
+                hoveredChampionId
+            });
+            return;
+        }
+
+        if (selectionMode === 'ban') {
+            onBan(hoveredChampionId as number);
+        } else {
+            onPick(hoveredChampionId as number);
+        }
+        setHoveredChampionId(null);
     };
 
     const confirmChampionAction = () => {
@@ -979,108 +1113,187 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         setConfirmModal({ visible: false, championId: null, action: selectionMode });
     };
 
-    // Helper to determine member status from actions
-    const getMemberStatus = useCallback((cellId: number, currentChampionId: number) => {
-        if (!currentChampionId) return 'none';
-
-        // Find the pick action for this cellId
-        const actions = champSelect?.actions || [];
-        for (const turn of actions) {
-            for (const action of turn) {
-                if (action.actorCellId === cellId && action.type === 'pick') {
-                    if (action.completed) return 'picked';
-                    // If action is in progress and they have a champion selected, it's a hover
-                    // Note: LCU updates member.championId when hovering during their turn
-                    if (action.championId === currentChampionId) return 'hovering';
-                }
-            }
+    const handleTrade = async (cellId: number) => {
+        if (!cellId || cellId === localPlayerCellId) return;
+        if (tradeRequestingCellId) return;
+        if (!hasPickedChampion) {
+            if (onError) onError('Pick your champion before sending a swap request.');
+            return;
         }
 
-        // Fallback: if we have a championId but no active pick action found (e.g. post-lock or enemy),
-        // we might assume it's picked if the phase is done, but for now let's assume 'hovering'
-        // unless we can verify it's locked. 
-        // Actually, for enemies in draft, we only see them when they lock (usually) or during their turn.
-        // If it's blind pick, we don't see enemy.
-        // Let's stick to: if championId > 0, check if there's a completed pick action.
+        // Ensure we own the teammate's champion before requesting a swap
+        const targetMember = myTeam.find((m: any) => m.cellId === cellId);
+        if (!targetMember || !targetMember.championId || !pickableChampionIds.includes(targetMember.championId)) {
+            if (onError) onError('You do not own that champion to swap.');
+            return;
+        }
 
-        // Simplified check:
-        // If there is ANY completed pick action for this cellId with this championId, it's picked.
+        setTradeRequestingCellId(cellId);
+        try {
+            const res = await lcuBridge.request(`/lol-champ-select/v1/session/trades/${cellId}/request`, 'POST');
+            if (res?.status && res.status >= 400) {
+                throw new Error(res?.content?.message || `Trade request failed (${res.status})`);
+            }
+            if (onSuccess) onSuccess('Swap request sent');
+        } catch (error) {
+            console.error('Failed to request trade:', error);
+            if (onError) onError('Failed to send swap request');
+        } finally {
+            setTradeRequestingCellId(null);
+        }
+    };
+
+    const handleAcceptTrade = async (tradeId: number) => {
+        try {
+            const res = await lcuBridge.request(`/lol-champ-select/v1/session/trades/${tradeId}/accept`, 'POST');
+            if (res?.status && res.status >= 400) {
+                throw new Error(res?.content?.message || `Failed (${res.status})`);
+            }
+            if (onSuccess) onSuccess('Swap accepted');
+        } catch (error) {
+            console.error('Failed to accept trade:', error);
+            if (onError) onError('Failed to accept swap');
+        }
+    };
+
+    const handleDeclineTrade = async (tradeId: number) => {
+        try {
+            const res = await lcuBridge.request(`/lol-champ-select/v1/session/trades/${tradeId}/decline`, 'POST');
+            if (res?.status && res.status >= 400) {
+                throw new Error(res?.content?.message || `Failed (${res.status})`);
+            }
+        } catch (error) {
+            console.error('Failed to decline trade:', error);
+            if (onError) onError('Failed to decline swap');
+        }
+    };
+
+    // Helper to determine member status from actions
+    const hoveredByCellId = useMemo(() => {
+        const map: Record<number, number> = {};
+        const actions = champSelect?.actions || [];
+        actions.forEach((turn: any[]) => {
+            turn.forEach((a: any) => {
+                if (!a) return;
+                if (!a.completed && typeof a.actorCellId === 'number' && a.championId && a.championId > 0) {
+                    map[a.actorCellId] = a.championId;
+                }
+            });
+        });
+        return map;
+    }, [champSelect?.actions]);
+
+    const getMemberStatus = useCallback((cellId: number, currentChampionId: number) => {
+        const actions = champSelect?.actions || [];
         const hasCompletedPick = actions.some((turn: any[]) =>
             turn.some((a: any) => a.actorCellId === cellId && a.type === 'pick' && a.completed)
         );
         if (hasCompletedPick) return 'picked';
+        if (hoveredByCellId[cellId]) return 'hovering';
+        if (currentChampionId) return 'picked';
+        return 'none';
+    }, [champSelect?.actions, hoveredByCellId]);
 
-        return 'hovering';
-    }, [champSelect?.actions]);
-
-    // Enhance team members with champion data and status
     const enhancedMyTeam = useMemo(() => {
         return myTeam.map((m: any) => ({
             ...m,
             championName: championMap[m.championId]?.key || 'Unknown',
+            hoverChampionId: hoveredByCellId[m.cellId],
             status: getMemberStatus(m.cellId, m.championId)
         }));
-    }, [myTeam, championMap, getMemberStatus]);
+    }, [myTeam, championMap, getMemberStatus, hoveredByCellId]);
 
     const enhancedTheirTeam = useMemo(() => {
         return theirTeam.map((m: any) => ({
             ...m,
             championName: championMap[m.championId]?.key || 'Unknown',
+            hoverChampionId: hoveredByCellId[m.cellId],
             status: getMemberStatus(m.cellId, m.championId)
         }));
-    }, [theirTeam, championMap, getMemberStatus]);
+    }, [theirTeam, championMap, getMemberStatus, hoveredByCellId]);
 
-    // Calculate grid states
-    const hoveredId = localPlayer?.championId && localPlayer.championId > 0 ? localPlayer.championId : null;
-
-    const teammateHoveredIds = useMemo(() => {
-        return enhancedMyTeam
-            .filter((m: any) => m.cellId !== localPlayerCellId && m.status === 'hovering' && m.championId > 0)
-            .map((m: any) => m.championId);
-    }, [enhancedMyTeam, localPlayerCellId]);
-
-    const pickedIds = useMemo(() => {
+    const allyBans = useMemo(() => {
         const ids = new Set<number>();
-        [...enhancedMyTeam, ...enhancedTheirTeam].forEach((m: any) => {
-            if (m.status === 'picked' && m.championId > 0) {
-                ids.add(m.championId);
+        const add = (val: any) => {
+            const parsed = typeof val === 'number' ? val : parseInt(val, 10);
+            if (Number.isFinite(parsed) && parsed > 0) ids.add(parsed);
+        };
+
+        const myBans = Array.isArray(champSelect?.bans?.myTeamBans) ? champSelect.bans.myTeamBans : [];
+        myBans.forEach(add);
+
+        // Fallback to completed ban actions from allied cells
+        (champSelect?.actions || []).forEach((turn: any) => {
+            if (!Array.isArray(turn)) return;
+            turn.forEach((action: any) => {
+                if ((action?.type || '').toLowerCase() !== 'ban') return;
+                if (!action?.completed) return;
+                if (!allyCellIds.has(action.actorCellId)) return;
+                add(action.championId ?? action?.championPickIntent);
+            });
+        });
+
+        return Array.from(ids);
+    }, [champSelect?.bans, champSelect?.actions, allyCellIds]);
+
+    const enemyBans = useMemo(() => {
+        const ids = new Set<number>();
+        const add = (val: any) => {
+            const parsed = typeof val === 'number' ? val : parseInt(val, 10);
+            if (Number.isFinite(parsed) && parsed > 0) ids.add(parsed);
+        };
+
+        const theirBans = Array.isArray(champSelect?.bans?.theirTeamBans) ? champSelect.bans.theirTeamBans : [];
+        theirBans.forEach(add);
+
+        // Fallback to completed ban actions from enemy cells
+        (champSelect?.actions || []).forEach((turn: any) => {
+            if (!Array.isArray(turn)) return;
+            turn.forEach((action: any) => {
+                if ((action?.type || '').toLowerCase() !== 'ban') return;
+                if (!action?.completed) return;
+                if (enemyCellIds.has(action.actorCellId)) {
+                    add(action.championId ?? action?.championPickIntent);
+                }
+            });
+        });
+
+        return Array.from(ids);
+    }, [champSelect?.bans, champSelect?.actions, enemyCellIds]);
+
+    const combinedBans = useMemo(() => Array.from(new Set([...allyBans, ...enemyBans])), [allyBans, enemyBans]);
+
+    const allChampionIds = useMemo(() => {
+        if (!Array.isArray(champions)) return [];
+        return champions.map((c) => c.id).filter((id) => typeof id === 'number' && id > 0);
+    }, [champions]);
+
+    const pickedChampionIds = useMemo(() => {
+        const ids: number[] = [];
+        [...myTeam, ...theirTeam].forEach((m: any) => {
+            if (typeof m?.championId === 'number' && m.championId > 0) {
+                ids.push(m.championId);
             }
         });
-        return Array.from(ids);
-    }, [enhancedMyTeam, enhancedTheirTeam]);
+        return Array.from(new Set(ids));
+    }, [myTeam, theirTeam]);
 
-    const bannedIds = useMemo(() => {
-        const ids = new Set<number>();
-        if (champSelect?.bans?.myTeamBans) champSelect.bans.myTeamBans.forEach((id: number) => ids.add(id));
-        if (champSelect?.bans?.theirTeamBans) champSelect.bans.theirTeamBans.forEach((id: number) => ids.add(id));
-        return Array.from(ids);
-    }, [champSelect?.bans]);
+    const availableChampionIds = useMemo(() => {
+        // During bans, all champions should be available regardless of ownership
+        if (selectionMode === 'ban') return allChampionIds;
+        if (!Array.isArray(pickableChampionIds)) return [];
+        return Array.from(new Set(pickableChampionIds));
+    }, [pickableChampionIds, selectionMode, allChampionIds]);
 
-    // Sync optimistic spells with real state when it updates
-    useEffect(() => {
-        if (!localPlayer) return;
-        // If real state matches optimistic, or if real state changed to something else, clear optimistic
-        if (optimisticSpells.spell1Id && localPlayer.spell1Id === optimisticSpells.spell1Id) {
-            setOptimisticSpells(prev => ({ ...prev, spell1Id: null }));
-        }
-        if (optimisticSpells.spell2Id && localPlayer.spell2Id === optimisticSpells.spell2Id) {
-            setOptimisticSpells(prev => ({ ...prev, spell2Id: null }));
-        }
-    }, [localPlayer?.spell1Id, localPlayer?.spell2Id, optimisticSpells]);
+    const visibleChampions = useMemo(() => {
+        if (!Array.isArray(champions)) return [];
+        // In ban phase, show everything; in planning/pick, show only owned (availableChampionIds)
+        if (selectionMode === 'ban') return champions;
+        const owned = new Set(availableChampionIds);
+        return champions.filter((c) => owned.has(c.id));
+    }, [champions, selectionMode, availableChampionIds]);
 
-    const activeSpell1 = optimisticSpells.spell1Id ?? localPlayer?.spell1Id;
-    const activeSpell2 = optimisticSpells.spell2Id ?? localPlayer?.spell2Id;
-
-    // Filter champions for ARAM pick phase (if specific pool is provided)
-    const displayedChampions = useMemo(() => {
-        if (isARAM && pickableChampionIds.length > 0) {
-            const allowed = new Set(pickableChampionIds);
-            return champions.filter(c => allowed.has(c.id));
-        }
-        return champions;
-    }, [champions, isARAM, pickableChampionIds]);
-
-    const benchChampionIds = useMemo(() => {
+    const propsBenchIds = useMemo(() => {
         const parsed = normalizeBenchPayload({
             benchChampionIds: champSelect?.benchChampionIds,
             benchChampions: (champSelect as any)?.benchChampions,
@@ -1090,229 +1303,374 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
         return Array.isArray(parsed) ? parsed : [];
     }, [champSelect, normalizeBenchPayload]);
 
+    useEffect(() => {
+        if (propsBenchIds.length > 0) {
+            setBenchChampionIds(propsBenchIds);
+        }
+    }, [propsBenchIds]);
+
     const offeredChampionIds = useMemo(() => {
         if (!isARAM) return [];
-
         if (benchChampionIds.length > 0) return Array.from(new Set(benchChampionIds));
-
         const inline = Array.isArray(pickableChampionIds) ? pickableChampionIds : [];
         if (inline.length > 0) return Array.from(new Set(inline));
-
         return [];
     }, [benchChampionIds, isARAM, pickableChampionIds]);
 
-    const hasOfferedPool = offeredChampionIds.length > 0;
-    const showBenchWidget = isARAM;
+    const activeSpell1 = optimisticSpells.spell1Id ?? localPlayer?.spell1Id;
+    const activeSpell2 = optimisticSpells.spell2Id ?? localPlayer?.spell2Id;
+
+    // --- RENDER ---
+
+    // Background logic simplified to use bgSource directly
+    // const backgroundUri = ... removed in favor of direct local asset usage
+
+    const bgSource = useMemo(() => {
+        const mapId = sharedMapId ?? champSelect?.mapId ?? champSelect?.gameData?.mapId;
+        return mapBackgrounds[mapId as number] || mapBackgrounds.default;
+    }, [sharedMapId, champSelect?.mapId, champSelect?.gameData?.mapId]);
 
     return (
-        <SafeAreaView style={styles.safeArea}>
-            <View style={styles.container}>
-                <View style={styles.header}>
-                    <Text style={styles.timerText}>{timeLeft > 0 ? timeLeft : '--'}</Text>
-                    <Text style={styles.phaseText}>{currentAction?.type?.toLowerCase() === 'ban' ? 'Ban Phase' : 'Pick Phase'}</Text>
-                    {/* Debug Info for ARAM */}
-                    <Text style={{ color: 'yellow', fontSize: 10 }}>
-                        ARAM:{isARAM ? 'Y' : 'N'} BenchEn:{showBench ? 'Y' : 'N'}
-                        Bench#{benchChampionIds.length}
-                        Pick#{pickableChampionIds.length}
-                        {loadingBench ? ' (bench..)' : ''}
-                    </Text>
-                    {loadingResources && <ActivityIndicator size="small" color="#4f46e5" style={{ marginTop: 5 }} />}
-                </View>
+        <ImageBackground source={bgSource} style={styles.container} resizeMode="cover">
+            <SafeAreaView style={styles.safeArea}>
+                <LinearGradient
+                    colors={['rgba(0,0,0,0.6)', 'rgba(0,0,0,0.3)', 'rgba(0,0,0,0.8)']}
+                    style={StyleSheet.absoluteFill}
+                />
 
-                <Tab
-                    value={index}
-                    onChange={(e) => setIndex(e)}
-                    indicatorStyle={{ backgroundColor: '#4f46e5', height: 3 }}
-                    variant="primary"
-                >
-                    <Tab.Item title="Champion" titleStyle={styles.tabTitle} containerStyle={styles.tabItem} />
-                    <Tab.Item title="Loadout" titleStyle={styles.tabTitle} containerStyle={styles.tabItem} />
-                </Tab>
+                {/* Base Layer: Team View (Always rendered) */}
+                <View style={{ flex: 1 }}>
+                    <ScrollView style={styles.mainContent}>
+                        {/* Header Info */}
+                        <View style={styles.header}>
+                            <View style={styles.headerTop}>
+                                <Text style={styles.headerTitle}>
+                                    {selectionMode === 'ban' ? 'BAN A CHAMPION' : 'CHOOSE YOUR CHAMPION'}
+                                </Text>
+                                <Text style={styles.timerText}>{timeLeft}</Text>
+                            </View>
 
-                <TabView value={index} onChange={setIndex} animationType="spring">
-                    {/* Champion Tab */}
-                    <TabView.Item style={styles.tabContent}>
-                        {isARAM ? (
-                            <ScrollView
-                                style={styles.championTabContent}
-                                contentContainerStyle={styles.championTabContentContainer}
-                                showsVerticalScrollIndicator={false}
-                                nestedScrollEnabled
-                            >
-                                <View style={styles.teamViewContainer}>
-                                    <TeamView
-                                        myTeam={enhancedMyTeam}
-                                        theirTeam={enhancedTheirTeam}
-                                        bans={[]}
-                                        version={ddragonVersion}
-                                    />
-                                </View>
-
-                                {showBenchWidget && (
-                                    <View style={styles.aramScrollWrapper}>
-                                        <View style={styles.aramMessageContainer}>
-                                            <Text style={styles.aramMessage}>ARAM Bench</Text>
-                                            <Text style={styles.aramSubMessage}>Your available swaps appear below.</Text>
-                                        </View>
-
-                                        <Text style={[styles.sectionTitle, { marginTop: 10 }]}>Available to Swap</Text>
-                                        {(!benchChampionIds || benchChampionIds.length === 0) ? (
-                                            <View style={styles.emptyBenchContainer}>
-                                                {loadingBench ? (
-                                                    <ActivityIndicator size="small" color="#4f46e5" />
-                                                ) : (
-                                                    <>
-                                                        <Text style={styles.emptyBenchText}>Bench is empty right now</Text>
-                                                        <Text style={styles.emptyBenchSubText}>Unpicked champs will appear here</Text>
-                                                    </>
-                                                )}
-                                            </View>
-                                        ) : (
-                                            <View style={styles.benchGrid}>
-                                                {benchChampionIds.map((id: number) => {
-                                                    const isSwapping = swappingChampionId === id;
-                                                    const champion = championMap[id];
-                                                    const championName = champion?.name || 'Unknown';
-
-                                                    return (
-                                                        <TouchableOpacity
-                                                            key={`bench-${id}`}
-                                                            onPress={() => handleSwap(id)}
-                                                            style={[
-                                                                styles.benchItem,
-                                                                isSwapping && styles.benchItemSwapping
-                                                            ]}
-                                                            disabled={isSwapping || swappingChampionId !== null}
-                                                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                                                            activeOpacity={0.8}
-                                                        >
-                                                            {isSwapping ? (
-                                                                <View style={styles.benchLoadingContainer}>
-                                                                    <ActivityIndicator size="small" color="#4f46e5" />
-                                                                </View>
-                                                            ) : (
-                                                                <>
-                                                                    {safeImageUri(champion?.key ? `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` : null) ? (
-                                                                        <Image
-                                                                            source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champion?.key}.png` }}
-                                                                            style={styles.benchImage}
-                                                                        />
-                                                                    ) : (
-                                                                        <View style={[styles.benchImage, styles.benchPlaceholder]} />
-                                                                    )}
-                                                                    <View style={styles.benchOverlay}>
-                                                                        <Text style={styles.benchSwapText}>SWAP</Text>
-                                                                    </View>
-                                                                </>
-                                                            )}
-                                                            <Text style={styles.benchChampionName} numberOfLines={1}>
-                                                                {championName}
-                                                            </Text>
-                                                        </TouchableOpacity>
-                                                    );
-                                                })}
-                                            </View>
-                                        )}
-                                    </View>
-                                )}
-                            </ScrollView>
-                        ) : (
-                            <View style={styles.championTabContent}>
-                                <View style={styles.teamViewContainer}>
-                                    <TeamView
-                                        myTeam={enhancedMyTeam}
-                                        theirTeam={enhancedTheirTeam}
-                                        bans={bannedIds}
-                                        version={ddragonVersion}
-                                    />
-                                </View>
-
-                                <View style={styles.pickModeRow}>
-                                    <Text style={styles.sectionLabel}>
-                                        {currentAction?.type?.toLowerCase() === 'ban' ? 'Ban Phase' : 'Pick Phase'}
+                            {/* Incoming trade banner */}
+                            {incomingTrade && (
+                                <View style={styles.tradeBanner}>
+                                    <Text style={styles.tradeBannerText}>
+                                        Swap request from {incomingTradeMember?.gameName || incomingTradeMember?.summonerName || incomingTradeMember?.championName || 'teammate'}
                                     </Text>
+                                    <View style={styles.tradeBannerActions}>
+                                        <TouchableOpacity
+                                            style={[styles.tradeBannerBtn, styles.tradeBannerAccept, { marginRight: 8 }]}
+                                            onPress={() => incomingTrade?.id && handleAcceptTrade(incomingTrade.id)}
+                                            disabled={!incomingTrade?.id}
+                                        >
+                                            <Text style={styles.tradeBannerBtnText}>Accept</Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                            style={[styles.tradeBannerBtn, styles.tradeBannerDecline]}
+                                            onPress={() => incomingTrade?.id && handleDeclineTrade(incomingTrade.id)}
+                                            disabled={!incomingTrade?.id}
+                                        >
+                                            <Text style={styles.tradeBannerBtnText}>Decline</Text>
+                                        </TouchableOpacity>
+                                    </View>
                                 </View>
-                                <View style={styles.gridContainer}>
-                                    <ChampionGrid
-                                        champions={displayedChampions}
-                                        onSelect={handleChampionSelect}
-                                        version={ddragonVersion}
-                                        disabled={!isARAM && hasPickedChampion && selectionMode === 'pick' && !currentAction}
-                                        hoveredId={hoveredId}
-                                        teammateHoveredIds={teammateHoveredIds}
-                                        pickedIds={pickedIds}
-                                        bannedIds={bannedIds}
-                                    />
+                            )}
+
+                            {/* ARAM Bench */}
+                            {isARAM && (
+                                <View style={styles.benchContainer}>
+                                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                        {benchChampionIds.map((id: number) => {
+                                            const disabled = combinedBans.includes(id) || pickedChampionIds.includes(id) || !availableChampionIds.includes(id);
+                                            return (
+                                                <TouchableOpacity
+                                                    key={id}
+                                                    style={[styles.benchItem, disabled && styles.benchItemDisabled]}
+                                                    onPress={() => !disabled && handleSwap(id)}
+                                                    disabled={disabled}
+                                                >
+                                                    <Image
+                                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${championMap[id]?.key}.png` }}
+                                                        style={[styles.benchIcon, disabled && styles.benchIconDisabled]}
+                                                    />
+                                                </TouchableOpacity>
+                                            );
+                                        })}
+                                    </ScrollView>
+                                </View>
+                            )}
+                        </View>
+
+                        {/* My Team */}
+                        <View style={styles.teamSection}>
+                            <Text style={styles.teamTitle}>Your team</Text>
+                            {enhancedMyTeam.map((member: any, idx: number) => {
+                                const isMe = member.cellId === localPlayerCellId;
+                                const tradeState = trades.find((t: any) => t.cellId === member.cellId);
+
+                                const ownsTeammateChamp = pickableChampionIds.includes(member.championId);
+
+                                // Determine if trade is allowed
+                                const localMember = enhancedMyTeam.find((m: any) => m.cellId === localPlayerCellId);
+                                const isLocalPicked = isARAM ? hasPickedChampion : localMember?.status === 'picked';
+                                const isTeammatePicked = isARAM ? member.championId > 0 : member.status === 'picked';
+
+                                const canTrade = !isMe &&
+                                    member.championId > 0 &&
+                                    ownsTeammateChamp &&
+                                    (isARAM || (isLocalPicked && isTeammatePicked));
+
+                                const isTradePendingHere = tradeRequestingCellId === member.cellId;
+                                const hasIncomingTrade = tradeState?.state === 'RECEIVED';
+                                const hasOutgoingTrade = tradeState?.state === 'SENT';
+                                const tradeDisabled = !canTrade || isTradePendingHere || !!hasIncomingTrade || !!hasOutgoingTrade;
+
+                                const hoveringCandidateId = hoveredByCellId[member.cellId] || (isMe ? (hoveredChampionId || lastIntentChampionId) : null);
+                                const displayChampionId = hoveringCandidateId || (member.championId && member.championId > 0 ? member.championId : null);
+                                const displayChampionKey = displayChampionId ? championMap[displayChampionId]?.key : member.championName;
+                                const isHovering = member.status === 'hovering';
+
+                                return (
+                                    <View key={member.cellId} style={styles.teamRow}>
+                                        {/* Splash Background for Row */}
+                                        <Animated.Image
+                                            source={{ uri: `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${displayChampionKey}_0.jpg` }}
+                                            style={[styles.splashImageTopCrop, { opacity: isHovering ? hoverBlinkAnim : 1 }]}
+                                            blurRadius={0}
+                                        />
+                                        <Animated.View style={[
+                                            styles.teamRowOverlay,
+                                            isHovering ? { opacity: hoverBlinkAnim } : null
+                                        ]} />
+
+                                        <View style={styles.teamRowContent}>
+                                            {/* Spells */}
+                                            <View style={styles.rowSpells}>
+                                                <Image source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(member.spell1Id)}.png` }} style={styles.smallSpellIcon} />
+                                                <Image source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(member.spell2Id)}.png` }} style={styles.smallSpellIcon} />
+                                            </View>
+
+                                            {/* Name & Hovered/Picked Champ */}
+                                            <View style={styles.memberNameBlock}>
+                                                <Text style={styles.memberName}>
+                                                    {member.gameName
+                                                        || member.summonerName
+                                                        || displayChampionKey
+                                                        || 'waiting for pick'}
+                                                </Text>
+                                            </View>
+
+                                            {/* Trade Button / Status */}
+                                            {canTrade && (
+                                                <TouchableOpacity
+                                                    onPress={() => handleTrade(member.cellId)}
+                                                    style={[styles.rowAction, tradeDisabled && { borderColor: '#525252' }]}
+                                                    disabled={tradeDisabled}
+                                                >
+                                                    <Image
+                                                        source={tradeDisabled
+                                                            ? require('../../static/icon/tft_swap_disabled.png')
+                                                            : require('../../static/icon/tft_swap_default.png')
+                                                        }
+                                                        style={[styles.tradeIcon, tradeDisabled && { opacity: 0.5 }]}
+                                                    />
+                                                </TouchableOpacity>
+                                            )}
+
+                                            {/* Incoming Trade Request */}
+                                            {tradeState && tradeState.state === 'RECEIVED' && (
+                                                <View style={styles.tradeRequest}>
+                                                    <Text style={styles.tradeText}>Trade?</Text>
+                                                    <TouchableOpacity onPress={() => handleAcceptTrade(tradeState.id)} style={styles.tradeBtnAccept}>
+                                                        <Text style={styles.tradeBtnText}>✓</Text>
+                                                    </TouchableOpacity>
+                                                    <TouchableOpacity onPress={() => handleDeclineTrade(tradeState.id)} style={styles.tradeBtnDecline}>
+                                                        <Text style={styles.tradeBtnText}>✕</Text>
+                                                    </TouchableOpacity>
+                                                </View>
+                                            )}
+                                        </View>
+                                    </View>
+                                );
+                            })}
+                        </View>
+
+                        {/* Bans (Non-ARAM) */}
+                        {!isARAM && (
+                            <View style={styles.bansSection}>
+                                <Text style={styles.teamTitle}>Bans</Text>
+                                <View style={styles.banGroupsRow}>
+                                    <View style={[styles.banGroup, { marginRight: 12 }]}>
+                                        <Text style={styles.banGroupTitle}>Allies</Text>
+                                        <ScrollView horizontal>
+                                            {allyBans.length === 0 && (
+                                                <Text style={styles.banEmpty}>None yet</Text>
+                                            )}
+                                            {allyBans.map((id: number) => (
+                                                <Image
+                                                    key={`ally-ban-${id}`}
+                                                    source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${championMap[id]?.key}.png` }}
+                                                    style={styles.banIcon}
+                                                />
+                                            ))}
+                                            {selectionMode === 'ban' && hoveredChampionId && !allyBans.includes(hoveredChampionId) && (
+                                                <Animated.Image
+                                                    source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${championMap[hoveredChampionId]?.key}.png` }}
+                                                    style={[styles.banIcon, { opacity: blinkAnim, borderColor: '#ef4444', borderWidth: 2 }]}
+                                                />
+                                            )}
+                                        </ScrollView>
+                                    </View>
+
+                                    <View style={styles.banGroup}>
+                                        <Text style={styles.banGroupTitle}>Enemies</Text>
+                                        <ScrollView horizontal>
+                                            {enemyBans.length === 0 && (
+                                                <Text style={styles.banEmpty}>None yet</Text>
+                                            )}
+                                            {enemyBans.map((id: number) => (
+                                                <Image
+                                                    key={`enemy-ban-${id}`}
+                                                    source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${championMap[id]?.key}.png` }}
+                                                    style={styles.banIcon}
+                                                />
+                                            ))}
+                                        </ScrollView>
+                                    </View>
                                 </View>
                             </View>
                         )}
-                    </TabView.Item>
 
-                    {/* Loadout Tab */}
-                    <TabView.Item style={styles.tabContent}>
-                        <ScrollView>
-                            <Text style={styles.sectionTitle}>Runes</Text>
-                            <TouchableOpacity style={styles.selectorButton} onPress={() => setShowRunePicker(true)}>
-                                <Text style={styles.selectorButtonText}>
-                                    {runes.find(r => r.isActive)?.name || 'Select Runes'}
+                        {/* Enemy Team - mirror ally UI */}
+                        <View style={styles.teamSection}>
+                            <Text style={styles.teamTitle}>Enemy team</Text>
+                            {enhancedTheirTeam.map((member: any, idx: number) => {
+                                const hoveringCandidateId = hoveredByCellId[member.cellId];
+                                const displayChampionId = hoveringCandidateId || (member.championId && member.championId > 0 ? member.championId : null);
+                                const displayChampionKey = displayChampionId ? championMap[displayChampionId]?.key : member.championName;
+                                const name = member.gameName || member.summonerName || displayChampionKey || `Summoner ${idx + 1}`;
+                                const isHovering = member.status === 'hovering';
+                                return (
+                                    <View key={member.cellId || idx} style={styles.teamRow}>
+                                        <Animated.Image
+                                            source={{ uri: `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${displayChampionKey}_0.jpg` }}
+                                            style={[styles.splashImageTopCrop, { opacity: isHovering ? hoverBlinkAnim : 1 }]}
+                                            blurRadius={0}
+                                        />
+                                        <Animated.View style={[
+                                            styles.teamRowOverlay,
+                                            isHovering ? { opacity: hoverBlinkAnim } : null
+                                        ]} />
+                                        <View style={styles.teamRowContent}>
+                                            <View style={styles.rowSpells}>
+                                                <View style={[styles.smallSpellIcon, { backgroundColor: 'rgba(0,0,0,0.3)' }]} />
+                                                <View style={[styles.smallSpellIcon, { backgroundColor: 'rgba(0,0,0,0.3)' }]} />
+                                            </View>
+                                            <View style={styles.memberNameBlock}>
+                                                <Text style={styles.memberName}>
+                                                    {name}
+                                                </Text>
+                                            </View>
+                                        </View>
+                                    </View>
+                                );
+                            })}
+                        </View>
+                    </ScrollView>
+                </View>
+
+                {/* Overlay: Champion Grid */}
+                {(!isARAM && !hasPickedChampion && (selectionMode === 'pick' || selectionMode === 'ban' || selectionMode === 'planning') && isGridOpen) && (
+                    <SafeAreaView style={styles.gridOverlay} edges={['top', 'bottom']}>
+                        <ChampionGrid
+                            champions={visibleChampions}
+                            onSelect={handleChampionSelect}
+                            version={ddragonVersion}
+                            disabled={false}
+                            hoveredId={effectiveHoveredChampionId}
+                            teammateHoveredIds={Object.values(hoveredByCellId).filter((id) => id && id !== effectiveHoveredChampionId)}
+                            pickedIds={pickedChampionIds}
+                            bannedIds={combinedBans}
+                            availableChampionIds={availableChampionIds}
+                            ListHeaderComponent={
+                                <View style={styles.header}>
+                                    <View style={styles.headerTop}>
+                                        <Text style={styles.headerTitle}>
+                                            {selectionMode === 'ban' ? 'BAN A CHAMPION' : 'CHOOSE YOUR CHAMPION'}
+                                        </Text>
+                                        <View style={styles.headerActions}>
+                                            <Text style={styles.timerText}>{timeLeft}</Text>
+                                        </View>
+                                    </View>
+                                </View>
+                            }
+                            ListFooterComponent={
+                                <View style={styles.gridFooter} />
+                            }
+                        />
+                        {/* Close Champions Pill - Bottom Center */}
+                        <TouchableOpacity style={styles.stickyCloseButton} onPress={() => setIsGridOpen(false)}>
+                            <Text style={styles.stickyOpenButtonText}>▼ CLOSE CHAMPIONS</Text>
+                        </TouchableOpacity>
+                        {/* Lock Button - Absolute Positioned */}
+                        {!isIntentPhase && (
+                            <TouchableOpacity
+                                style={[
+                                    styles.lockInButton,
+                                    (!hoveredChampionId || !currentAction || currentAction.completed || currentAction.isInProgress === false) && styles.lockInButtonDisabled,
+                                    { position: 'absolute', bottom: 90, left: 20, right: 20 }
+                                ]}
+                                onPress={handleLockIn}
+                                disabled={!hoveredChampionId || !currentAction || currentAction.completed || currentAction.isInProgress === false}
+                            >
+                                <Text style={styles.lockInButtonText}>
+                                    LOCK
                                 </Text>
                             </TouchableOpacity>
-                            <View style={styles.runeActionsRow}>
-                                <View style={{ flex: 1 }}>
-                                    <Text style={styles.currentRuneLabel}>Current Page</Text>
-                                    <Text style={styles.currentRuneName}>{runes.find(r => r.isActive)?.name || 'None selected'}</Text>
-                                </View>
-                                <View style={styles.runeActionButtons}>
-                                    <Button
-                                        title="Edit"
-                                        type="outline"
-                                        onPress={() => openRuneBuilder({ edit: true })}
-                                        buttonStyle={styles.secondaryButton}
-                                        titleStyle={styles.secondaryButtonTitle}
-                                        containerStyle={[styles.secondaryButtonContainer, { marginRight: 6 }]}
-                                    />
-                                    <Button
-                                        title="New Page"
-                                        type="solid"
-                                        onPress={openNewRuneBuilder}
-                                        buttonStyle={[styles.secondaryButton, { backgroundColor: '#4f46e5' }]}
-                                        titleStyle={styles.secondaryButtonTitle}
-                                        containerStyle={styles.secondaryButtonContainer}
-                                    />
-                                </View>
-                            </View>
+                        )}
+                    </SafeAreaView>
+                )}
 
-                            <Text style={styles.sectionTitle}>Spells</Text>
-                            <View style={styles.spellsContainer}>
-                                <TouchableOpacity style={styles.spellButton} onPress={() => openSpellPicker(true)}>
-                                    <Image
-                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(activeSpell1)}.png` }}
-                                        style={styles.spellIcon}
-                                    />
-                                </TouchableOpacity>
-                                <TouchableOpacity style={styles.spellButton} onPress={() => openSpellPicker(false)}>
-                                    <Image
-                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(activeSpell2)}.png` }}
-                                        style={styles.spellIcon}
-                                    />
-                                </TouchableOpacity>
-                            </View>
+                {/* Sticky Open Button */}
+                {(!isARAM && !hasPickedChampion && (selectionMode === 'pick' || selectionMode === 'ban' || selectionMode === 'planning') && !isGridOpen) && (
+                    <TouchableOpacity style={styles.stickyOpenButton} onPress={() => setIsGridOpen(true)}>
+                        <Text style={styles.stickyOpenButtonText}>▲ OPEN CHAMPIONS</Text>
+                    </TouchableOpacity>
+                )
+                }
 
-                            <Text style={styles.sectionTitle}>Skins</Text>
-                            <TouchableOpacity style={styles.selectorButton} onPress={() => setShowSkinPicker(true)}>
-                                <Text style={styles.selectorButtonText}>
-                                    {skins.find(s => s.id === localPlayer?.selectedSkinId)?.name || 'Select Skin'}
-                                </Text>
+                {/* Bottom Bar: Loadout */}
+                <View style={styles.bottomBar}>
+                    {/* Rune Dropdown */}
+                    <TouchableOpacity style={styles.runeDropdown} onPress={() => setShowRunePicker(true)}>
+                        <Text style={styles.runeDropdownText} numberOfLines={1}>
+                            {runes.find(r => r.isActive)?.name || 'Runes'}
+                        </Text>
+                        <Image source={require('../../static/dropdown_arrows.png')} style={styles.dropdownArrow} />
+                    </TouchableOpacity>
+
+                    {/* Edit Rune Page */}
+                    <TouchableOpacity style={styles.editRuneBtn} onPress={() => openRuneBuilder()}>
+                        <Text style={styles.editRuneText}>✎</Text>
+                    </TouchableOpacity>
+
+                    {/* Spells & Skin */}
+                    <View style={styles.bottomRightGroup}>
+                        <View style={styles.bottomSpells}>
+                            <TouchableOpacity onPress={() => openSpellPicker(true)}>
+                                <Image source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(activeSpell1)}.png` }} style={styles.bottomSpellIcon} />
                             </TouchableOpacity>
-                        </ScrollView>
-                    </TabView.Item>
+                            <TouchableOpacity onPress={() => openSpellPicker(false)}>
+                                <Image source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(activeSpell2)}.png` }} style={styles.bottomSpellIcon} />
+                            </TouchableOpacity>
+                        </View>
 
+                        <TouchableOpacity onPress={() => setShowSkinPicker(true)}>
+                            <Image source={require('../../static/skin_picker_icon.png')} style={styles.skinPickerIcon} />
+                        </TouchableOpacity>
+                    </View>
+                </View>
 
-
-                </TabView>
-
-                {/* Pickers */}
+                {/* Modals */}
                 <SpellPicker
                     visible={showSpellPicker}
                     onSelect={handleSpellSelect}
@@ -1346,8 +1704,6 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                     pages={runes}
                     currentPageId={runes.find(r => r.isActive)?.id}
                 />
-
-                {/* Confirm pick/ban */}
                 <CustomModal
                     visible={confirmModal.visible}
                     title={confirmModal.action === 'ban' ? 'Confirm Ban' : 'Confirm Pick'}
@@ -1359,863 +1715,499 @@ export default function ChampSelectScreen({ champSelect, onPick, onBan, onError,
                     onClose={() => setConfirmModal({ visible: false, championId: null, action: selectionMode })}
                 />
 
-                {/* Rune builder */}
-                <Modal
+
+                <RuneBuilder
                     visible={showRuneBuilder}
-                    animationType="slide"
-                    transparent
-                    onRequestClose={() => setShowRuneBuilder(false)}
-                >
-                    <View style={styles.modalOverlay}>
-                        <View style={[styles.modalCard, { maxHeight: '90%', width: '95%', padding: 0, overflow: 'hidden', flex: 1 }]}>
-                            {/* Sticky Header */}
-                            <View style={styles.runeBuilderHeader}>
-                                <View>
-                                    <Text style={styles.modalTitle}>{editingPageId ? 'Edit Rune Page' : 'Create Rune Page'}</Text>
-                                    <Text style={styles.modalSubtitle}>{editingPageId ? 'Update your current setup' : 'Customize your playstyle'}</Text>
-                                </View>
-                                <View style={styles.headerActions}>
-                                    <Button
-                                        title="Cancel"
-                                        type="clear"
-                                        onPress={() => setShowRuneBuilder(false)}
-                                        titleStyle={{ color: '#9ca3af' }}
-                                    />
-                                    <Button
-                                        title={editingPageId ? 'Save Changes' : 'Create Page'}
-                                        onPress={handleCreateRunePage}
-                                        buttonStyle={styles.saveButton}
-                                        icon={{ name: 'save', type: 'font-awesome', color: 'white', size: 14 }}
-                                    />
-                                </View>
-                            </View>
-
-                            <ScrollView style={styles.runeBuilderContent} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-                                {!perkStyles.length ? (
-                                    <View style={{ alignItems: 'center', paddingVertical: 30 }}>
-                                        <ActivityIndicator color="#4f46e5" />
-                                        <Text style={{ color: '#9ca3af', marginTop: 12 }}>Loading runes from LCU...</Text>
-                                    </View>
-                                ) : null}
-
-                                <TextInput
-                                    value={runePageName}
-                                    onChangeText={setRunePageName}
-                                    placeholder="Rune Page Name"
-                                    placeholderTextColor="#666"
-                                    style={styles.runeNameInput}
-                                />
-
-                                <View style={styles.runeSection}>
-                                    <Text style={styles.sectionLabel}>Primary Style</Text>
-                                    <View style={styles.styleRow}>
-                                        {perkStyles.map((style: any, idx: number) => (
-                                            <TouchableOpacity
-                                                key={`style-${style.id || idx}`}
-                                                style={[
-                                                    styles.styleChip,
-                                                    primaryStyleId === style.id && styles.styleChipActive
-                                                ]}
-                                                onPress={() => {
-                                                    setPrimaryStyleId(style.id);
-                                                    const getPerkId = (perk: any) => typeof perk === 'number' ? perk : perk?.id;
-                                                    setKeystoneId(style.slots?.[0]?.perks?.[0] ? getPerkId(style.slots[0].perks[0]) : null);
-                                                    setPrimaryPerks({
-                                                        1: style.slots?.[1]?.perks?.[0] ? getPerkId(style.slots[1].perks[0]) : null,
-                                                        2: style.slots?.[2]?.perks?.[0] ? getPerkId(style.slots[2].perks[0]) : null,
-                                                        3: style.slots?.[3]?.perks?.[0] ? getPerkId(style.slots[3].perks[0]) : null,
-                                                    });
-                                                }}
-                                            >
-                                                {/* Ideally show style icon here too */}
-                                                <Text style={[styles.styleChipText, primaryStyleId === style.id && styles.styleChipTextActive]}>{style.name}</Text>
-                                            </TouchableOpacity>
-                                        ))}
-                                    </View>
-                                </View>
-
-                                {primaryStyleId && (
-                                    <View style={styles.runeSection}>
-                                        <View style={styles.runeRowHeader}>
-                                            <Text style={styles.sectionLabel}>Keystone</Text>
-                                            <View style={styles.divider} />
-                                        </View>
-                                        <View style={styles.perkRow}>
-                                            {(perkStyles.find((s: any) => s.id === primaryStyleId)?.slots?.[0]?.perks || [])
-                                                .filter(Boolean)
-                                                .map((perk: any, perkIdx: number) => {
-                                                    const perkId = typeof perk === 'number' ? perk : perk?.id;
-                                                    const perkName = typeof perk === 'number' ? `Perk ${perk}` : perk?.name || `Perk ${perkId}`;
-                                                    const iconUri = safeImageUri(getRuneIconUri(perk));
-                                                    const hasFailed = iconUri ? failedRuneImages.has(iconUri) : true;
-                                                    const isSelected = keystoneId === perkId;
-
-                                                    return (
-                                                        <TouchableOpacity
-                                                            key={`keystone-${perkId ?? `idx-${perkIdx}`}`}
-                                                            style={[
-                                                                styles.keystoneCard,
-                                                                isSelected && styles.keystoneCardActive
-                                                            ]}
-                                                            onPress={() => setKeystoneId(perkId)}
-                                                        >
-                                                            {iconUri && !hasFailed ? (
-                                                                <Image
-                                                                    source={{ uri: iconUri }}
-                                                                    style={[styles.keystoneIcon, !isSelected && { opacity: 0.5 }]}
-                                                                    onError={(e) => {
-                                                                        if (__DEV__) console.warn('[RuneIcon] Failed to load keystone image:', iconUri, e.nativeEvent.error);
-                                                                        setFailedRuneImages(prev => new Set(prev).add(iconUri));
-                                                                    }}
-                                                                />
-                                                            ) : (
-                                                                <View style={[styles.keystoneIcon, styles.benchPlaceholder]} />
-                                                            )}
-                                                            {isSelected && <Text style={styles.perkNameActive} numberOfLines={1}>{perkName}</Text>}
-                                                        </TouchableOpacity>
-                                                    );
-                                                })}
-                                        </View>
-
-                                        {[1, 2, 3].map((slotIdx) => (
-                                            <View key={slotIdx} style={styles.slotContainer}>
-                                                <View style={styles.perkRow}>
-                                                    {(perkStyles.find((s: any) => s.id === primaryStyleId)?.slots?.[slotIdx]?.perks || [])
-                                                        .filter(Boolean)
-                                                        .map((perk: any, perkIdx: number) => {
-                                                            const perkId = typeof perk === 'number' ? perk : perk?.id;
-                                                            const perkName = typeof perk === 'number' ? `Perk ${perk}` : perk?.name || `Perk ${perkId}`;
-                                                            const iconUri = safeImageUri(getRuneIconUri(perk));
-                                                            const hasFailed = iconUri ? failedRuneImages.has(iconUri) : true;
-                                                            const isSelected = primaryPerks[slotIdx] === perkId;
-
-                                                            return (
-                                                                <TouchableOpacity
-                                                                    key={`primary-${slotIdx}-${perkId ?? `idx-${perkIdx}`}`}
-                                                                    style={[
-                                                                        styles.perkCard,
-                                                                        isSelected && styles.perkCardActive
-                                                                    ]}
-                                                                    onPress={() => setPrimaryPerks(prev => ({ ...prev, [slotIdx]: perkId }))}
-                                                                >
-                                                                    {iconUri && !hasFailed ? (
-                                                                        <Image
-                                                                            source={{ uri: iconUri }}
-                                                                            style={[styles.perkIcon, !isSelected && { opacity: 0.4 }]}
-                                                                            onError={(e) => {
-                                                                                if (__DEV__) console.warn('[RuneIcon] Failed to load primary slot image:', iconUri, e.nativeEvent.error);
-                                                                                setFailedRuneImages(prev => new Set(prev).add(iconUri));
-                                                                            }}
-                                                                        />
-                                                                    ) : (
-                                                                        <View style={[styles.perkIcon, styles.benchPlaceholder]} />
-                                                                    )}
-                                                                </TouchableOpacity>
-                                                            );
-                                                        })}
-                                                </View>
-                                            </View>
-                                        ))}
-                                    </View>
-                                )}
-
-                                <View style={styles.runeSection}>
-                                    <Text style={styles.sectionLabel}>Secondary Style</Text>
-                                    <View style={styles.styleRow}>
-                                        {perkStyles.filter((s: any) => s.id !== primaryStyleId).map((style: any, idx: number) => (
-                                            <TouchableOpacity
-                                                key={`sub-${style.id || idx}`}
-                                                style={[
-                                                    styles.styleChip,
-                                                    subStyleId === style.id && styles.styleChipActive
-                                                ]}
-                                                onPress={() => {
-                                                    setSubStyleId(style.id);
-                                                    setSecondaryPerks([]);
-                                                }}
-                                            >
-                                                <Text style={[styles.styleChipText, subStyleId === style.id && styles.styleChipTextActive]}>{style.name}</Text>
-                                            </TouchableOpacity>
-                                        ))}
-                                    </View>
-
-                                    {subStyleId && (
-                                        <View style={styles.secondaryContainer}>
-                                            {(perkStyles.find((s: any) => s.id === subStyleId)?.slots || [])
-                                                .slice(1) // drop keystone slot
-                                                .slice(0, 3) // ensure three rows
-                                                .map((slot: any, slotIdx: number) => {
-                                                    const slotIndex = slotIdx + 1; // matches original slot numbering (1,2,3)
-                                                    return (
-                                                        <View key={`secondary-slot-${slotIndex}`} style={styles.slotContainer}>
-                                                            <View style={styles.perkRow}>
-                                                                {(slot.perks || []).filter(Boolean).map((perk: any, perkIdx: number) => {
-                                                                    const perkId = typeof perk === 'number' ? perk : perk?.id;
-                                                                    const iconUri = safeImageUri(getRuneIconUri(perk));
-                                                                    const hasFailed = iconUri ? failedRuneImages.has(iconUri) : true;
-                                                                    const isSelected = secondaryPerks.includes(perkId);
-
-                                                                    return (
-                                                                        <TouchableOpacity
-                                                                            key={`secondary-${slotIndex}-${perkId ?? `idx-${perkIdx}`}`}
-                                                                            style={[
-                                                                                styles.perkCard,
-                                                                                isSelected && styles.perkCardActive
-                                                                            ]}
-                                                                            onPress={() => toggleSecondaryPerk(perkId, slotIndex)}
-                                                                        >
-                                                                            {iconUri && !hasFailed ? (
-                                                                                <Image
-                                                                                    source={{ uri: iconUri }}
-                                                                                    style={[styles.perkIcon, !isSelected && { opacity: 0.4 }]}
-                                                                                    onError={(e) => {
-                                                                                        if (__DEV__) console.warn('[RuneIcon] Failed to load secondary slot image:', iconUri, e.nativeEvent.error);
-                                                                                        setFailedRuneImages(prev => new Set(prev).add(iconUri));
-                                                                                    }}
-                                                                                />
-                                                                            ) : (
-                                                                                <View style={[styles.perkIcon, styles.benchPlaceholder]} />
-                                                                            )}
-                                                                        </TouchableOpacity>
-                                                                    );
-                                                                })}
-                                                            </View>
-                                                        </View>
-                                                    );
-                                                })}
-                                        </View>
-                                    )}
-                                </View>
-
-                                <View style={styles.runeSection}>
-                                    <View style={styles.runeRowHeader}>
-                                        <Text style={styles.sectionLabel}>Stat Shards</Text>
-                                        <View style={styles.divider} />
-                                    </View>
-                                    <View style={styles.shardContainer}>
-                                        {shardRows.map((row, idx) => (
-                                            <View key={`shard-row-${idx}`} style={styles.shardRow}>
-                                                {row.map((opt) => {
-                                                    const selected = statShards[idx] === opt.id;
-                                                    return (
-                                                        <TouchableOpacity
-                                                            key={`shard-${idx}-${opt.id}`}
-                                                            style={[styles.shardButton, selected && styles.shardButtonActive]}
-                                                            onPress={() => {
-                                                                const next = [...statShards];
-                                                                next[idx] = opt.id;
-                                                                setStatShards(next as number[]);
-                                                            }}
-                                                        >
-                                                            {safeImageUri(getRuneIconUri(opt.id)) ? (
-                                                                <Image
-                                                                    source={{ uri: getRuneIconUri(opt.id)! }}
-                                                                    style={[styles.shardIcon, !selected && { opacity: 0.45 }]}
-                                                                />
-                                                            ) : null}
-                                                            <Text style={[styles.shardText, selected && styles.shardTextActive]}>
-                                                                {opt.label}
-                                                            </Text>
-                                                            <Text style={styles.shardSubText}>{opt.desc}</Text>
-                                                        </TouchableOpacity>
-                                                    );
-                                                })}
-                                            </View>
-                                        ))}
-                                    </View>
-                                </View>
-                            </ScrollView>
-                        </View>
-                    </View>
-                </Modal>
-
-            </View >
-        </SafeAreaView>
+                    onClose={() => setShowRuneBuilder(false)}
+                    onSave={(pageData) => {
+                        setRunePageName(pageData.name);
+                        setPrimaryStyleId(pageData.primaryStyleId);
+                        setSubStyleId(pageData.subStyleId);
+                        handleCreateRunePage(pageData);
+                    }}
+                    initialPage={{
+                        id: editingPageId ?? undefined,
+                        name: runePageName,
+                        primaryStyleId,
+                        subStyleId,
+                        isEditable: (editingRunePage ?? activeRunePage)?.isEditable,
+                        selectedPerkIds: [
+                            keystoneId,
+                            primaryPerks[1],
+                            primaryPerks[2],
+                            primaryPerks[3],
+                            ...secondaryPerks,
+                            ...statShards
+                        ].filter((id): id is number => typeof id === 'number')
+                    }}
+                    perkStyles={perkStyles}
+                    runeIconMap={runeIconMap}
+                    normalizeRuneIcon={normalizeRuneIcon}
+                    onDelete={handleDeleteRunePage}
+                    canDelete={!!editingPageId}
+                    onCreateNew={handleRequestNewPage}
+                />
+            </SafeAreaView >
+        </ImageBackground >
     );
 }
 
-
-
 const styles = StyleSheet.create({
-    safeArea: {
-        flex: 1,
-        backgroundColor: '#0a0a0a',
-    },
     container: {
         flex: 1,
-        backgroundColor: '#0a0a0a',
+        backgroundColor: '#000',
     },
-    center: {
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    loadingText: {
-        color: '#ffffff',
-        marginTop: 10,
+    safeArea: {
+        flex: 1,
     },
     header: {
-        paddingTop: 40,
-        paddingBottom: 10,
-        alignItems: 'center',
-        backgroundColor: '#171717',
-    },
-    timerText: {
-        fontSize: 32,
-        fontWeight: 'bold',
-        color: '#ffffff',
-    },
-    phaseText: {
-        fontSize: 12,
-        color: '#a3a3a3',
-        textTransform: 'uppercase',
-    },
-    tabTitle: {
-        fontSize: 14,
-        color: '#ffffff',
-    },
-    tabItem: {
-        backgroundColor: '#171717',
-    },
-    tabContent: {
-        width: '100%',
-        flex: 1,
-    },
-    championTabContent: {
-        flex: 1,
-    },
-    championTabContentContainer: {
-        paddingBottom: 32,
-    },
-    teamViewContainer: {
-        paddingHorizontal: 10,
-        paddingBottom: 10,
-        backgroundColor: '#171717',
-        borderBottomWidth: 1,
-        borderBottomColor: '#262626',
-        marginBottom: 12,
-    },
-    gridContainer: {
-        flex: 1,
-        padding: 10,
-    },
-    offeredPlaceholder: {
-        marginHorizontal: 16,
-        marginTop: 12,
-        padding: 16,
-        borderRadius: 12,
-        backgroundColor: '#111827',
-        borderWidth: 1,
-        borderColor: '#1f2937',
-        alignItems: 'center',
-    },
-    offeredHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 8,
-    },
-    offeredHint: {
-        color: '#9ca3af',
-        fontSize: 12,
-    },
-    offeredTitle: {
-        color: '#ffffff',
-        fontSize: 16,
-        fontWeight: '700',
-        marginBottom: 4,
-    },
-    offeredSubtitle: {
-        color: '#9ca3af',
-        fontSize: 13,
-        textAlign: 'center',
-        lineHeight: 18,
-    },
-    offeredAction: {
-        marginTop: 6,
-        color: '#4f46e5',
-        fontSize: 12,
-        fontWeight: '700',
-    },
-    pickModeRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 16,
-        marginBottom: 10,
-    },
-    sectionLabel: {
-        color: '#d1d5db',
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    modeButtons: {
-        flexDirection: 'row',
-        gap: 10,
-    },
-    modeButton: {
-        borderColor: '#4f46e5',
-    },
-    modeButtonActive: {
-        backgroundColor: '#4f46e5',
-    },
-    modeButtonTitle: {
-        color: '#fff',
-        fontSize: 12,
-    },
-    modeButtonContainer: {
-        minWidth: 80,
-    },
-    aramScrollWrapper: {
-        paddingHorizontal: 10,
-    },
-    sectionTitle: {
-        color: '#737373',
-        fontSize: 14,
-        textTransform: 'uppercase',
-        letterSpacing: 1,
-        marginTop: 20,
-        marginBottom: 10,
-        paddingHorizontal: 20,
-    },
-    runePage: {
-        padding: 15,
-        backgroundColor: '#171717',
-        borderRadius: 8,
-        marginBottom: 8,
-        borderWidth: 1,
-        borderColor: '#262626',
-        marginHorizontal: 20,
-    },
-    activeRunePage: {
-        borderColor: '#4f46e5',
-        backgroundColor: '#1e1b4b',
-    },
-    runePageName: {
-        color: '#a3a3a3',
-    },
-    activeRunePageText: {
-        color: '#ffffff',
-        fontWeight: 'bold',
-    },
-    spellsContainer: {
-        flexDirection: 'row',
-        gap: 20,
-        paddingHorizontal: 20,
-    },
-    selectorButton: {
-        backgroundColor: '#171717',
-        padding: 15,
-        borderRadius: 8,
-        marginHorizontal: 20,
-        borderWidth: 1,
-        borderColor: '#333',
-    },
-    secondaryButton: {
-        borderColor: '#4f46e5',
-        marginTop: 8,
-    },
-    secondaryButtonTitle: {
-        color: '#c7d2fe',
-    },
-    secondaryButtonContainer: {
-        marginHorizontal: 20,
-        marginTop: 8,
-    },
-    selectorButtonText: {
-        color: 'white',
-        fontSize: 16,
-    },
-    runeActionsRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 12,
-        marginHorizontal: 20,
-    },
-    runeActionButtons: {
-        flexDirection: 'row',
-        alignItems: 'center',
-    },
-    currentRuneLabel: {
-        color: '#9ca3af',
-        fontSize: 12,
-    },
-    currentRuneName: {
-        color: '#e5e7eb',
-        fontSize: 14,
-        fontWeight: '700',
-        marginTop: 2,
-    },
-    spellButton: {
-        width: 60,
-        height: 60,
-        backgroundColor: '#171717',
-        borderRadius: 8,
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderWidth: 1,
-        borderColor: '#333',
-    },
-    spellIcon: {
-        width: 50,
-        height: 50,
-        borderRadius: 6,
-    },
-    benchGrid: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        justifyContent: 'space-between',
-        paddingHorizontal: 20,
-        marginTop: 6,
-        paddingBottom: 24,
-    },
-    offeredContainer: {
-        paddingHorizontal: 20,
-        marginTop: 12,
-    },
-    offeredRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        marginTop: 8,
-    },
-    offeredItem: {
-        alignItems: 'center',
-        width: 80,
-        marginRight: 10,
-        marginBottom: 10,
-    },
-    offeredIcon: {
-        width: 64,
-        height: 64,
-        borderRadius: 10,
-        marginBottom: 6,
-        backgroundColor: '#171717',
-    },
-    benchItem: {
-        width: 104,
-        backgroundColor: '#171717',
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: '#262626',
-        overflow: 'hidden',
-        marginBottom: 14,
-    },
-    benchItemSwapping: {
-        opacity: 0.6,
-        borderColor: '#4f46e5',
-    },
-    benchImage: {
-        width: 104,
-        height: 104,
-    },
-    benchPlaceholder: {
-        backgroundColor: '#1f2937',
-    },
-    benchOverlay: {
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.6)',
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    benchSwapText: {
-        color: '#ffffff',
-        fontSize: 12,
-        fontWeight: 'bold',
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-    },
-    benchChampionName: {
-        color: '#ffffff',
-        fontSize: 12,
-        fontWeight: '500',
-        marginTop: 6,
-        textAlign: 'center',
-        paddingHorizontal: 6,
-        maxWidth: 104,
-    },
-    benchLoadingContainer: {
-        width: 104,
-        height: 104,
-        justifyContent: 'center',
-        alignItems: 'center',
-        backgroundColor: '#171717',
-    },
-    emptyBenchContainer: {
-        padding: 30,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    emptyBenchText: {
-        color: '#737373',
-        fontSize: 16,
-        fontWeight: '500',
-        marginBottom: 8,
-        textAlign: 'center',
-    },
-    emptyBenchSubText: {
-        color: '#525252',
-        fontSize: 14,
-        textAlign: 'center',
-    },
-    aramChampionTabContainer: {
-        flex: 1,
-        paddingHorizontal: 10,
-    },
-    aramMessageContainer: {
-        paddingVertical: 20,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    aramMessage: {
-        color: 'white',
-        fontSize: 20,
-        fontWeight: 'bold',
-        marginBottom: 10,
-    },
-    aramSubMessage: {
-        color: '#888',
-        fontSize: 14,
-    },
-    modalOverlay: {
-        flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.75)',
-        justifyContent: 'center',
-        alignItems: 'center',
         padding: 16,
     },
-    modalCard: {
-        backgroundColor: '#111827',
-        borderRadius: 12,
-        padding: 16,
-        width: '90%',
-    },
-    modalTitle: {
-        color: '#fff',
-        fontSize: 18,
-        fontWeight: '700',
-        marginBottom: 10,
-    },
-    modalBody: {
-        color: '#d1d5db',
-        fontSize: 14,
-        marginBottom: 16,
-    },
-    modalActions: {
-        flexDirection: 'row',
-        justifyContent: 'flex-end',
-        gap: 10,
-        marginTop: 10,
-    },
-    modalConfirm: {
-        backgroundColor: '#4f46e5',
-    },
-    modalCancel: {
-        borderColor: '#6b7280',
-    },
-    modalCancelText: {
-        color: '#e5e7eb',
-    },
-    modalActionContainer: {
-        minWidth: 100,
-    },
-    runeNameInput: {
-        backgroundColor: '#0f172a',
-        borderColor: '#1f2937',
-        borderWidth: 1,
-        borderRadius: 8,
-        color: '#e5e7eb',
-        paddingHorizontal: 12,
-        paddingVertical: 10,
-        marginBottom: 12,
-    },
-    styleRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 8,
-        marginBottom: 12,
-    },
-    styleChip: {
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: '#334155',
-        backgroundColor: '#0f172a',
-    },
-    styleChipActive: {
-        borderColor: '#4f46e5',
-        backgroundColor: '#1f2937',
-    },
-    styleChipText: {
-        color: '#e5e7eb',
-        fontSize: 12,
-    },
-    perkRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 10,
-        marginVertical: 6,
-    },
-    perkCard: {
-        width: 90,
-        padding: 8,
-        borderRadius: 10,
-        borderWidth: 1,
-        borderColor: '#1f2937',
-        backgroundColor: '#0b1220',
-        alignItems: 'center',
-    },
-    perkCardActive: {
-        borderColor: '#4f46e5',
-        backgroundColor: '#1e1b4b',
-    },
-    perkIcon: {
-        width: 48,
-        height: 48,
-        marginBottom: 6,
-    },
-    perkName: {
-        color: '#e5e7eb',
-        fontSize: 11,
-        textAlign: 'center',
-    },
-    shardRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 8,
-        marginVertical: 6,
-    },
-    shardButtonContainer: {
-        minWidth: 110,
-    },
-    shardIcon: {
-        width: 28,
-        height: 28,
-        marginBottom: 6,
-    },
-    // New Rune Builder Styles
-    runeBuilderHeader: {
+    headerTop: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: 16,
-        borderBottomWidth: 1,
-        borderBottomColor: '#1f2937',
-        backgroundColor: '#111827',
-    },
-    modalSubtitle: {
-        color: '#9ca3af',
-        fontSize: 12,
-        marginTop: 2,
+        marginBottom: 10,
     },
     headerActions: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
     },
-    saveButton: {
-        backgroundColor: '#4f46e5',
-        paddingHorizontal: 16,
-        borderRadius: 6,
+    headerTitle: {
+        color: '#fbbf24', // Gold
+        fontSize: 18,
+        fontWeight: 'bold',
     },
-    runeBuilderContent: {
-        flex: 1,
-        backgroundColor: '#0b1220',
+    timerText: {
+        color: '#fbbf24',
+        fontSize: 18,
+        fontWeight: 'bold',
     },
-    runeSection: {
-        marginBottom: 24,
-    },
-    runeRowHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: 12,
-    },
-    divider: {
-        flex: 1,
-        height: 1,
-        backgroundColor: '#1f2937',
+    minimizeButton: {
         marginLeft: 12,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+        backgroundColor: '#1f2937',
     },
-    keystoneCard: {
-        width: 100,
-        height: 100,
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderRadius: 12,
+    minimizeButtonText: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: 'bold',
+    },
+    benchContainer: {
+        flexDirection: 'row',
+        marginTop: 10,
+    },
+    benchItem: {
+        marginRight: 8,
+    },
+    benchItemDisabled: {
+        opacity: 0.35,
+    },
+    benchIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 4,
         borderWidth: 1,
-        borderColor: '#1f2937',
-        backgroundColor: '#111827',
-        marginRight: 12,
+        borderColor: '#fbbf24',
     },
-    keystoneCardActive: {
-        borderColor: '#4f46e5',
-        backgroundColor: 'rgba(79, 70, 229, 0.1)',
+    benchIconDisabled: {
+        borderColor: '#4b5563',
     },
-    keystoneIcon: {
-        width: 64,
-        height: 64,
+    mainContent: {
+        flex: 1,
+    },
+    teamSection: {
+        marginBottom: 20,
+    },
+    teamTitle: {
+        color: '#9ca3af',
+        fontSize: 14,
+        marginLeft: 16,
         marginBottom: 8,
     },
-    perkNameActive: {
-        color: '#4f46e5',
-        fontSize: 11,
-        fontWeight: '600',
-        textAlign: 'center',
+    teamRow: {
+        height: 80,
+        marginBottom: 8, // Increased spacing for cleaner look
+        position: 'relative',
+        justifyContent: 'center',
+        overflow: 'hidden', // Mask the splash art
+        borderRadius: 8, // Polished corners
     },
-    styleChipTextActive: {
-        color: '#4f46e5',
-        fontWeight: '600',
+    teamRowOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(0,0,0,0.2)', // Reduced opacity for better visibility
     },
-    secondaryContainer: {
-        marginTop: 12,
-        padding: 12,
-        backgroundColor: '#111827',
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: '#1f2937',
+    teamRowContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 16,
     },
-    shardContainer: {
+    rowSpells: {
         flexDirection: 'column',
+        marginRight: 12,
+    },
+    smallSpellIcon: {
+        width: 20,
+        height: 20,
+        marginBottom: 2,
+        borderRadius: 2,
+    },
+    memberName: {
+        color: '#fff',
+        fontSize: 16,
+        fontWeight: 'bold',
+        flex: 1,
+        textShadowColor: 'rgba(0, 0, 0, 0.9)', // Stronger shadow
+        textShadowOffset: { width: -1, height: 1 },
+        textShadowRadius: 4, // Tighter radius for sharpness
+    },
+    memberNameBlock: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    hoveredRowBadge: {
+        marginLeft: 8,
+        padding: 4,
+        borderRadius: 8,
+        backgroundColor: 'rgba(15,23,42,0.8)',
+        borderWidth: 1,
+        borderColor: '#fbbf24',
+    },
+    hoveredRowIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 8,
+    },
+    rowAction: {
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        borderWidth: 1,
+        borderColor: '#fbbf24',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    enemyRow: {
+        padding: 16,
+        borderBottomWidth: 1,
+        borderBottomColor: 'rgba(255,255,255,0.1)',
+        backgroundColor: 'rgba(0,0,0,0.5)',
+    },
+    enemyRowContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
         gap: 12,
     },
-    shardButton: {
-        flex: 1,
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        borderRadius: 6,
+    enemyIconWrapper: {
+        width: 40,
+        height: 40,
+        borderRadius: 8,
+        overflow: 'hidden',
         borderWidth: 1,
-        borderColor: '#1f2937',
-        backgroundColor: '#111827',
+        borderColor: '#fbbf24',
+        backgroundColor: '#0f172a',
+    },
+    enemyIcon: {
+        width: '100%',
+        height: '100%',
+    },
+    enemyIconPlaceholder: {
+        backgroundColor: 'rgba(255,255,255,0.1)',
+    },
+    enemyName: {
+        color: '#fbbf24',
+        fontWeight: '700',
+    },
+    gridToggleButton: {
+        alignItems: 'center',
+        padding: 10,
+        marginTop: 8,
+    },
+    gridToggleText: {
+        color: '#fbbf24',
+        fontSize: 24,
+        fontWeight: 'bold',
+    },
+    bansSection: {
+        paddingHorizontal: 16,
+        marginBottom: 20,
+    },
+    splashImageTopCrop: {
+        position: 'absolute',
+        width: '100%',
+        height: undefined,
+        aspectRatio: 1.6, // Standardize wide splash ratio
+        top: -20, // Shift up slightly to frame faces (typically in top 30%)
+        opacity: 0.8, // Slight dim for text readability vs bright splashes
+    },
+    banGroupsRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+    },
+    banGroup: {
+        flex: 1,
+    },
+    banGroupTitle: {
+        color: '#e5e7eb',
+        fontSize: 13,
+        fontWeight: '600',
+        marginBottom: 6,
+    },
+    banEmpty: {
+        color: '#9ca3af',
+        fontStyle: 'italic',
+        marginRight: 8,
+        alignSelf: 'center',
+    },
+    banIcon: {
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        marginRight: 8,
+        opacity: 0.7,
+    },
+    bottomBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: 16,
+        backgroundColor: 'rgba(0,0,0,0.8)',
+        borderTopWidth: 1,
+        borderTopColor: 'rgba(255,255,255,0.1)',
+        height: 80,
+    },
+    runeDropdown: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: '#1e1e1e',
+        paddingHorizontal: 12,
+        height: 40,
+        borderRadius: 4,
+        marginRight: 8,
+        borderWidth: 1,
+        borderColor: '#3f3f46',
+    },
+    runeDropdownText: {
+        color: '#d4d4d8',
+        fontSize: 14,
+        flex: 1,
+    },
+    dropdownArrow: {
+        width: 12,
+        height: 12,
+        opacity: 0.7,
+    },
+    editRuneBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: '#fbbf24',
+        justifyContent: 'center',
         alignItems: 'center',
         marginRight: 8,
     },
-    shardButtonActive: {
-        borderColor: '#4f46e5',
-        backgroundColor: '#4f46e5',
+    editRuneText: {
+        color: '#fbbf24',
+        fontSize: 18,
     },
-    shardText: {
-        color: '#9ca3af',
+    runePathIconContainer: {
+        width: 40,
+        height: 40,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: 16,
+    },
+    runePathIcon: {
+        width: 32,
+        height: 32,
+    },
+    bottomRightGroup: {
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    bottomSpells: {
+        flexDirection: 'row',
+        gap: 8,
+        marginRight: 16,
+    },
+    bottomSpellIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: '#fbbf24',
+    },
+    skinPickerIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: '#fbbf24',
+    },
+    gridContainer: {
+        padding: 10,
+        minHeight: 300,
+    },
+    tradeIcon: {
+        width: 20,
+        height: 20,
+    },
+    tradeRequest: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: 'rgba(0,0,0,0.8)',
+        padding: 4,
+        borderRadius: 4,
+        position: 'absolute',
+        right: 10,
+    },
+    tradeText: {
+        color: '#fff',
         fontSize: 12,
-        textAlign: 'center',
-        fontWeight: '600',
+        marginRight: 8,
     },
-    shardTextActive: {
-        color: '#ffffff',
-        fontWeight: '600',
+    tradeBtnAccept: {
+        backgroundColor: '#22c55e',
+        width: 24,
+        height: 24,
+        borderRadius: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: 4,
     },
-    shardSubText: {
-        color: '#6b7280',
-        fontSize: 10,
-        marginTop: 2,
-        textAlign: 'center',
+    tradeBtnDecline: {
+        backgroundColor: '#ef4444',
+        width: 24,
+        height: 24,
+        borderRadius: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
     },
-    slotContainer: {
-        marginBottom: 12,
+    tradeBtnText: {
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: 'bold',
     },
+    tradeBanner: {
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        borderColor: '#fbbf24',
+        borderWidth: 1,
+        padding: 10,
+        borderRadius: 6,
+        marginTop: 8,
+        marginHorizontal: 4
+    },
+    tradeBannerText: {
+        color: '#f0e6d2',
+        fontWeight: '700',
+        marginBottom: 6
+    },
+    tradeBannerActions: {
+        flexDirection: 'row'
+    },
+    tradeBannerBtn: {
+        paddingVertical: 6,
+        paddingHorizontal: 12,
+        borderRadius: 4
+    },
+    tradeBannerAccept: {
+        backgroundColor: '#22c55e'
+    },
+    tradeBannerDecline: {
+        backgroundColor: '#ef4444'
+    },
+    tradeBannerBtnText: {
+        color: '#fff',
+        fontWeight: '700',
+        fontSize: 12
+    },
+    stickyButtonContainer: {
+        position: 'absolute',
+        bottom: 90, // Above bottom bar (80 height + padding)
+        left: 0,
+        right: 0,
+        paddingHorizontal: 20,
+        paddingBottom: 10,
+        zIndex: 10,
+    },
+    lockInButton: {
+        backgroundColor: 'rgba(30, 35, 40, 0.9)',
+        borderWidth: 2,
+        borderColor: '#fbbf24', // Gold
+        paddingVertical: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    lockInButtonDisabled: {
+        opacity: 0.5,
+        borderColor: '#6b7280',
+    },
+    lockInButtonText: {
+        color: '#fbbf24', // Gold
+        fontSize: 18,
+        fontWeight: '800',
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+        fontFamily: 'serif', // If supported, otherwise system font
+    },
+    memberStatus: {
+        color: '#fbbf24',
+        fontSize: 12,
+        fontStyle: 'italic',
+        textShadowColor: 'rgba(0, 0, 0, 0.9)',
+        textShadowOffset: { width: -1, height: 1 },
+        textShadowRadius: 4,
+    },
+    gridFooter: {
+        padding: 16,
+        paddingBottom: 32,
+        backgroundColor: 'rgba(0,0,0,0.8)',
+    },
+    gridOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        zIndex: 100,
+        backgroundColor: '#09090b', // Dark background for overlay
+    },
+    stickyOpenButton: {
+        position: 'absolute',
+        bottom: 100,
+        alignSelf: 'center',
+        backgroundColor: '#fbbf24',
+        paddingVertical: 12,
+        paddingHorizontal: 24,
+        borderRadius: 25,
+        elevation: 5,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        zIndex: 90,
+    },
+    stickyOpenButtonText: {
+        color: '#000',
+        fontWeight: 'bold',
+        fontSize: 16,
+    },
+    stickyCloseButton: {
+        position: 'absolute',
+        bottom: 20, // Inside SafeAreaView, this is roughly bottom of grid
+        alignSelf: 'center',
+        backgroundColor: '#fbbf24',
+        paddingVertical: 12,
+        paddingHorizontal: 24,
+        borderRadius: 25,
+        elevation: 5,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.3,
+        shadowRadius: 4,
+        zIndex: 90,
+    },
+
 });

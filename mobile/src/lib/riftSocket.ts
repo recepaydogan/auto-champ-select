@@ -111,7 +111,6 @@ export default class RiftSocket {
       new Uint8Array(keyBuffer).set(keyArray);
       const keyBase64 = this.arrayBufferToBase64(keyBuffer);
 
-      console.log('[RiftSocket] Encrypting with key base64:', keyBase64);
 
       // Generate random IV using CryptoJS
       const ivWords = CryptoJS.lib.WordArray.random(16);
@@ -130,7 +129,6 @@ export default class RiftSocket {
       const encryptedBase64 = encrypted.ciphertext.toString(CryptoJS.enc.Base64);
       encryptedPayload = ivBase64 + ':' + encryptedBase64;
 
-      console.log('[RiftSocket] Encrypted payload:', encryptedPayload.substring(0, 50) + '...');
     }
 
     this.socket?.send(JSON.stringify([

@@ -298,118 +298,152 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
             const updatedSlots = [...currentSlots];
             updatedSlots[index] = slotToUpdate;
             
-            // Try 1: Exact same pattern as position-preferences (most likely to work)
+            // Try 1: Dedicated quickplay endpoints
             try {
-                console.log(`Trying endpoint 1: /lol-lobby/v2/lobby/members/localMember/playerSlots (same pattern as position-preferences)`);
+                console.log(`Trying endpoint 1: /lol-lobby/v2/lobby/quickplay/slots`);
                 result = await lcuBridge.request(
-                    '/lol-lobby/v2/lobby/members/localMember/playerSlots',
+                    '/lol-lobby/v2/lobby/quickplay/slots',
                     'PUT',
                     updatedSlots
                 );
                 if (result.status === 200 || result.status === 204) {
-                    console.log(`✓ Successfully updated slot ${index} via playerSlots endpoint`);
+                    console.log(`✓ Successfully updated slot ${index} via /quickplay/slots`);
                 } else {
                     throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
                 }
-            } catch (error1: any) {
-                console.log(`✗ Endpoint 1 failed: ${error1.message}`);
-                
-                // Try 2: Hyphenated version (player-slots instead of playerSlots)
+            } catch (error0: any) {
+                console.log(`✗ Endpoint 1 failed: ${error0.message}`);
+
+                // Try individual quickplay slot
                 try {
-                    console.log(`Trying endpoint 2: /lol-lobby/v2/lobby/members/localMember/player-slots (hyphenated)`);
+                    console.log(`Trying endpoint 2: /lol-lobby/v2/lobby/quickplay/slots/${index}`);
                     result = await lcuBridge.request(
-                        '/lol-lobby/v2/lobby/members/localMember/player-slots',
+                        `/lol-lobby/v2/lobby/quickplay/slots/${index}`,
                         'PUT',
-                        updatedSlots
+                        slotToUpdate
                     );
                     if (result.status === 200 || result.status === 204) {
-                        console.log(`✓ Successfully updated slot ${index} via player-slots endpoint`);
+                        console.log(`✓ Successfully updated slot ${index} via /quickplay/slots/${index}`);
                     } else {
                         throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
                     }
-                } catch (error2: any) {
-                    console.log(`✗ Endpoint 2 failed: ${error2.message}`);
-                    
-                    // Try 3: Update individual slot (player-slots/{index})
+                } catch (error0b: any) {
+                    console.log(`✗ Quickplay slot endpoints failed: ${error0b.message}`);
+
+                    // Try playerSlots variations
                     try {
-                        console.log(`Trying endpoint 3: /lol-lobby/v2/lobby/members/localMember/player-slots/${index}`);
+                        console.log(`Trying endpoint 3: /lol-lobby/v2/lobby/members/localMember/playerSlots (same pattern as position-preferences)`);
                         result = await lcuBridge.request(
-                            `/lol-lobby/v2/lobby/members/localMember/player-slots/${index}`,
+                            '/lol-lobby/v2/lobby/members/localMember/playerSlots',
                             'PUT',
-                            slotToUpdate
+                            updatedSlots
                         );
                         if (result.status === 200 || result.status === 204) {
-                            console.log(`✓ Successfully updated slot ${index} via individual player-slots endpoint`);
+                            console.log(`✓ Successfully updated slot ${index} via playerSlots endpoint`);
                         } else {
                             throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
                         }
-                    } catch (error3: any) {
-                        console.log(`✗ Endpoint 3 failed: ${error3.message}`);
+                    } catch (error1: any) {
+                        console.log(`✗ Endpoint 3 failed: ${error1.message}`);
                         
-                        // Try 4: Update via summonerId (like position-preferences but with playerSlots)
+                        // Try 4: Hyphenated version (player-slots instead of playerSlots)
                         try {
-                            console.log(`Trying endpoint 4: /lol-lobby/v2/lobby/members/${summonerId}/playerSlots`);
+                            console.log(`Trying endpoint 4: /lol-lobby/v2/lobby/members/localMember/player-slots (hyphenated)`);
                             result = await lcuBridge.request(
-                                `/lol-lobby/v2/lobby/members/${summonerId}/playerSlots`,
+                                '/lol-lobby/v2/lobby/members/localMember/player-slots',
                                 'PUT',
                                 updatedSlots
                             );
                             if (result.status === 200 || result.status === 204) {
-                                console.log(`✓ Successfully updated slot ${index} via summonerId endpoint`);
+                                console.log(`✓ Successfully updated slot ${index} via player-slots endpoint`);
                             } else {
                                 throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
                             }
-                        } catch (error4: any) {
-                            console.log(`✗ Endpoint 4 failed: ${error4.message}`);
+                        } catch (error2: any) {
+                            console.log(`✗ Endpoint 4 failed: ${error2.message}`);
                             
-                            // Try 5: Update entire localMember object (playerSlots might be read-only, need to update parent)
+                            // Try 5: Update individual slot (player-slots/{index})
                             try {
-                                console.log(`Trying endpoint 5: PUT /lol-lobby/v2/lobby/members/localMember (updating entire object)`);
-                                const updatedLocalMember = {
-                                    ...localMember,
-                                    playerSlots: updatedSlots
-                                };
+                                console.log(`Trying endpoint 5: /lol-lobby/v2/lobby/members/localMember/player-slots/${index}`);
                                 result = await lcuBridge.request(
-                                    '/lol-lobby/v2/lobby/members/localMember',
+                                    `/lol-lobby/v2/lobby/members/localMember/player-slots/${index}`,
                                     'PUT',
-                                    updatedLocalMember
+                                    slotToUpdate
                                 );
                                 if (result.status === 200 || result.status === 204) {
-                                    console.log(`✓ Successfully updated slot ${index} via localMember update`);
+                                    console.log(`✓ Successfully updated slot ${index} via individual player-slots endpoint`);
                                 } else {
                                     throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
                                 }
-                            } catch (error5: any) {
-                                console.log(`✗ Endpoint 5 failed: ${error5.message}`);
+                            } catch (error3: any) {
+                                console.log(`✗ Endpoint 5 failed: ${error3.message}`);
                                 
-                                // Try 6: PATCH instead of PUT for localMember
+                                // Try 6: Update via summonerId (like position-preferences but with playerSlots)
                                 try {
-                                    console.log(`Trying endpoint 6: PATCH /lol-lobby/v2/lobby/members/localMember`);
-                                    const updatedLocalMember = {
-                                        ...localMember,
-                                        playerSlots: updatedSlots
-                                    };
+                                    console.log(`Trying endpoint 6: /lol-lobby/v2/lobby/members/${summonerId}/playerSlots`);
                                     result = await lcuBridge.request(
-                                        '/lol-lobby/v2/lobby/members/localMember',
-                                        'PATCH',
-                                        updatedLocalMember
+                                        `/lol-lobby/v2/lobby/members/${summonerId}/playerSlots`,
+                                        'PUT',
+                                        updatedSlots
                                     );
                                     if (result.status === 200 || result.status === 204) {
-                                        console.log(`✓ Successfully updated slot ${index} via PATCH localMember`);
+                                        console.log(`✓ Successfully updated slot ${index} via summonerId endpoint`);
                                     } else {
                                         throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
                                     }
-                                } catch (error6: any) {
-                                    console.log(`✗ All endpoint attempts failed. Last error: ${error6.message}`);
-                                    console.log(`\n=== DEBUGGING INFO ===`);
-                                    console.log(`The LCU API doesn't seem to support direct playerSlots updates.`);
-                                    console.log(`To find the correct endpoint:`);
-                                    console.log(`1. Open League of Legends client`);
-                                    console.log(`2. Press F12 to open DevTools`);
-                                    console.log(`3. Go to Network tab`);
-                                    console.log(`4. Change a quickplay slot in the League client`);
-                                    console.log(`5. Look for the PUT/PATCH request and share the URL`);
-                                    throw new Error(`Failed to update slot: All endpoint attempts failed. The playerSlots endpoint may not exist or use a different structure. Please check the League client Network tab (F12) when changing a slot to find the correct endpoint.`);
+                                } catch (error4: any) {
+                                    console.log(`✗ Endpoint 6 failed: ${error4.message}`);
+                                    
+                                    // Try 7: Update entire localMember object (playerSlots might be read-only, need to update parent)
+                                    try {
+                                        console.log(`Trying endpoint 7: PUT /lol-lobby/v2/lobby/members/localMember (updating entire object)`);
+                                        const updatedLocalMember = {
+                                            ...localMember,
+                                            playerSlots: updatedSlots
+                                        };
+                                        result = await lcuBridge.request(
+                                            '/lol-lobby/v2/lobby/members/localMember',
+                                            'PUT',
+                                            updatedLocalMember
+                                        );
+                                        if (result.status === 200 || result.status === 204) {
+                                            console.log(`✓ Successfully updated slot ${index} via localMember update`);
+                                        } else {
+                                            throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
+                                        }
+                                    } catch (error5: any) {
+                                        console.log(`✗ Endpoint 7 failed: ${error5.message}`);
+                                        
+                                        // Try 8: PATCH instead of PUT for localMember
+                                        try {
+                                            console.log(`Trying endpoint 8: PATCH /lol-lobby/v2/lobby/members/localMember`);
+                                            const updatedLocalMember = {
+                                                ...localMember,
+                                                playerSlots: updatedSlots
+                                            };
+                                            result = await lcuBridge.request(
+                                                '/lol-lobby/v2/lobby/members/localMember',
+                                                'PATCH',
+                                                updatedLocalMember
+                                            );
+                                            if (result.status === 200 || result.status === 204) {
+                                                console.log(`✓ Successfully updated slot ${index} via PATCH localMember`);
+                                            } else {
+                                                throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
+                                            }
+                                        } catch (error6: any) {
+                                            console.log(`✗ All endpoint attempts failed. Last error: ${error6.message}`);
+                                            console.log(`\n=== DEBUGGING INFO ===`);
+                                            console.log(`The LCU API doesn't seem to support direct playerSlots updates.`);
+                                            console.log(`To find the correct endpoint:`);
+                                            console.log(`1. Open League of Legends client`);
+                                            console.log(`2. Press F12 to open DevTools`);
+                                            console.log(`3. Go to Network tab`);
+                                            console.log(`4. Change a quickplay slot in the League client`);
+                                            console.log(`5. Look for the PUT/PATCH request and share the URL`);
+                                            throw new Error(`Failed to update slot: All endpoint attempts failed. The playerSlots endpoint may not exist or use a different structure. Please check the League client Network tab (F12) when changing a slot to find the correct endpoint.`);
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -1,12 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TextInput, Switch } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, ScrollView, ActivityIndicator, Modal, TextInput, Switch, ImageBackground, Animated, Easing } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '@rneui/themed';
-import RolePicker from '../components/RolePicker';
+import RolePicker, { ROLES } from '../components/RolePicker';
 import QuickplaySetup from '../components/QuickplaySetup';
 import { getLCUBridge } from '../lib/lcuBridge';
+import { useAppStore } from '../state/appStore';
 import ChampionGrid from '../components/ChampionGrid';
 import { FavoriteChampionConfig, Lane, lanes, updateLanePreference } from '../lib/favoriteChampions';
+
+
+const GOLD = '#c7b37b';
+const OFFWHITE = '#e8e2cf';
+
+const mapBackgrounds: Record<number | 'default', any> = {
+    10: require('../../static/backgrounds/bg-tt.jpg'),
+    11: require('../../static/backgrounds/bg-sr.jpg'),
+    12: require('../../static/backgrounds/bg-ha.jpg'),
+    22: require('../../static/backgrounds/bg-tft.jpg'),
+    default: require('../../static/magic-background.jpg')
+};
 
 interface LobbyScreenProps {
     lobby: any;
@@ -20,6 +33,13 @@ interface LobbyScreenProps {
     favoritesLoaded?: boolean;
     onError?: (message: string) => void;
     onSuccess?: (message: string) => void;
+    gamePhase?: string;
+    timeInQueue?: number;
+    onCancelQueue?: () => void;
+    readyCheck?: any;
+    onAcceptMatch?: () => void;
+    onDeclineMatch?: () => void;
+    queuePenaltySeconds?: number;
 }
 
 export default function LobbyScreen({
@@ -33,16 +53,25 @@ export default function LobbyScreen({
     onSaveFavoriteConfig,
     favoritesLoaded,
     onError,
-    onSuccess
+    onSuccess,
+    gamePhase,
+    timeInQueue,
+    onCancelQueue,
+    readyCheck,
+    onAcceptMatch,
+    onDeclineMatch,
+    queuePenaltySeconds = 0,
 }: LobbyScreenProps) {
     const [showRolePicker, setShowRolePicker] = useState(false);
     const [pickingFirstRole, setPickingFirstRole] = useState(true);
     const [memberNames, setMemberNames] = useState<{ [summonerId: number]: string }>({});
     const [showInviteModal, setShowInviteModal] = useState(false);
     const [friends, setFriends] = useState<any[]>([]);
+    const [suggestedPlayers, setSuggestedPlayers] = useState<any[]>([]);
     const [loadingFriends, setLoadingFriends] = useState(false);
     const [invitingId, setInvitingId] = useState<number | null>(null);
     const [friendSearch, setFriendSearch] = useState('');
+    const [activeTab, setActiveTab] = useState<'suggested' | 'friends'>('suggested');
     const [availabilityFilter, setAvailabilityFilter] = useState<'all' | 'online'>('all');
     const [queueInfo, setQueueInfo] = useState<any>(null);
     const [friendSortMode, setFriendSortMode] = useState<'availability' | 'name'>('availability');
@@ -56,10 +85,27 @@ export default function LobbyScreen({
     const [loadingChamps, setLoadingChamps] = useState(false);
     const [activeLane, setActiveLane] = useState<Lane | null>(null);
     const [showFavoriteGrid, setShowFavoriteGrid] = useState(false);
+    const [clock, setClock] = useState(() => new Date());
+    const [memberMenu, setMemberMenu] = useState<{ visible: boolean; member: any | null }>({ visible: false, member: null });
+    const setSharedMapId = useAppStore((state: any) => state.setMapId);
 
     const lcuBridge = getLCUBridge();
     const localMember = lobby?.members?.find((m: any) => m.puuid === lobby?.localMember?.puuid) || lobby?.localMember;
-    const isQuickplay = !!(lobby?.gameConfig?.showQuickPlaySlotSelection || [480, 490].includes(lobby?.gameConfig?.queueId));
+    const hasQuickplaySlots = Array.isArray(localMember?.playerSlots) && localMember.playerSlots.length > 0;
+    const gameModeStr = (lobby?.gameConfig?.gameMode || '').toLowerCase();
+    const isQuickplay = !!(
+        hasQuickplaySlots ||
+        lobby?.gameConfig?.showQuickPlaySlotSelection ||
+        gameModeStr.includes('quick') ||
+        gameModeStr.includes('tam') || // locale variant for Tam Gaz
+        [480, 490].includes(lobby?.gameConfig?.queueId)
+    );
+
+    const showPositionSelector = lobby?.gameConfig?.showPositionSelector || false;
+
+    // Determine background based on mapId
+    const mapId = queueInfo?.mapId || lobby?.gameConfig?.mapId;
+    const bgSource = mapBackgrounds[mapId] || mapBackgrounds.default;
 
     // Fetch queue information to get shortName
     useEffect(() => {
@@ -67,6 +113,7 @@ export default function LobbyScreen({
             const queueId = lobby?.gameConfig?.queueId;
             if (!queueId || !lcuBridge.getIsConnected()) {
                 setQueueInfo(null);
+                setSharedMapId(lobby?.gameConfig?.mapId ?? null);
                 return;
             }
 
@@ -74,21 +121,31 @@ export default function LobbyScreen({
                 const result = await lcuBridge.request(`/lol-game-queues/v1/queues/${queueId}`);
                 if (result.status === 200 && result.content) {
                     setQueueInfo(result.content);
+                    if (result.content?.mapId) {
+                        setSharedMapId(result.content.mapId);
+                    }
                 } else {
                     setQueueInfo(null);
+                    setSharedMapId(lobby?.gameConfig?.mapId ?? null);
                 }
             } catch (error) {
                 console.error('[LobbyScreen] Failed to fetch queue info:', error);
                 setQueueInfo(null);
+                setSharedMapId(lobby?.gameConfig?.mapId ?? null);
             }
         };
 
         fetchQueueInfo();
-    }, [lobby?.gameConfig?.queueId]);
+    }, [lobby?.gameConfig?.queueId, lobby?.gameConfig?.mapId, lcuBridge, setSharedMapId]);
 
     useEffect(() => {
         setEditingFavorites(favoriteConfig);
     }, [favoriteConfig]);
+
+    useEffect(() => {
+        const id = setInterval(() => setClock(new Date()), 1000);
+        return () => clearInterval(id);
+    }, []);
 
     useEffect(() => {
         const loadChamps = async () => {
@@ -119,7 +176,40 @@ export default function LobbyScreen({
         };
 
         loadChamps();
+        loadChamps();
     }, []);
+
+    // Sync with LCU lobby state
+    useEffect(() => {
+        if (!lcuBridge.getIsConnected()) return;
+
+        let active = true;
+        const checkLobbyState = async () => {
+            try {
+                const result = await lcuBridge.request('/lol-lobby/v2/lobby');
+                if (!active) return;
+
+                // If lobby is gone (404) or null content, leave
+                if (result.status === 404 || !result.content) {
+                    console.log('[LobbyScreen] Lobby no longer exists, leaving screen');
+                    onLeaveLobby();
+                }
+            } catch (error) {
+                console.warn('[LobbyScreen] Failed to check lobby state', error);
+            }
+        };
+
+        // Check immediately
+        checkLobbyState();
+
+        // And poll every 2 seconds
+        const interval = setInterval(checkLobbyState, 2000);
+
+        return () => {
+            active = false;
+            clearInterval(interval);
+        };
+    }, [onLeaveLobby]);
 
     // Fetch summoner names for all members
     useEffect(() => {
@@ -141,6 +231,9 @@ export default function LobbyScreen({
             });
             lobby?.invitations?.forEach((invite: any) => {
                 if (invite.toSummonerId) idsToFetch.add(invite.toSummonerId);
+            });
+            suggestedPlayers?.forEach((player: any) => {
+                if (player.summonerId && !player.summonerName) idsToFetch.add(player.summonerId);
             });
 
             const idsNeedingFetch = Array.from(idsToFetch).filter(id => !fetchedIdsRef.current.has(id));
@@ -190,15 +283,16 @@ export default function LobbyScreen({
 
         fetchSummonerNames();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [lobby?.members, lobby?.invitations]);
+    }, [lobby?.members, lobby?.invitations, suggestedPlayers]);
 
-    const loadFriends = async () => {
+    const loadData = async () => {
         if (!lcuBridge.getIsConnected()) {
             return;
         }
         try {
             setLoadingFriends(true);
             const result = await lcuBridge.request('/lol-chat/v1/friends');
+            console.log('[LobbyScreen] Friends result:', result.status, result.content?.length);
             if (result.status === 200 && Array.isArray(result.content)) {
                 const availabilityOrder: Record<string, number> = {
                     chat: 0,
@@ -228,6 +322,13 @@ export default function LobbyScreen({
             } else {
                 setFriends(cachedFriendsRef.current || []);
             }
+
+            // Load suggested players
+            const suggestedResult = await lcuBridge.request('/lol-suggested-players/v1/suggested-players');
+            console.log('[LobbyScreen] Suggested result:', suggestedResult.status, suggestedResult.content?.length, suggestedResult.content?.[0]);
+            if (suggestedResult.status === 200 && Array.isArray(suggestedResult.content)) {
+                setSuggestedPlayers(suggestedResult.content);
+            }
         } catch (error) {
             console.error('[LobbyScreen] Failed to load friends list:', error);
             setFriends(cachedFriendsRef.current || []);
@@ -238,7 +339,7 @@ export default function LobbyScreen({
 
     useEffect(() => {
         if (showInviteModal) {
-            loadFriends();
+            loadData();
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showInviteModal]);
@@ -265,6 +366,12 @@ export default function LobbyScreen({
             return `${minutes} dakika`;
         }
         return `${minutes} dakika ${remainingSeconds} saniye`;
+    };
+
+    const formatTimeInQueue = (seconds: number) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
     };
 
     const getMapName = (mapId: number | null | undefined): string => {
@@ -388,15 +495,6 @@ export default function LobbyScreen({
                 if (prev.some(p => p.toSummonerId === toSummonerId)) return prev;
                 return [...prev, { toSummonerId, state: 'Pending', invitationId: `local-${Date.now()}` }];
             });
-            // Refresh lobby invitations snapshot
-            try {
-                const lobbyRes = await lcuBridge.request('/lol-lobby/v2/lobby');
-                if (lobbyRes.status === 200 && lobbyRes.content?.invitations) {
-                    setLocalPendingInvites(prev => prev.filter(p => lobbyRes.content.invitations.every((i: any) => i.toSummonerId !== p.toSummonerId)));
-                }
-            } catch (e) {
-                console.warn('[LobbyScreen] Failed to refresh invites after send', e);
-            }
             // Suppress lobby-level success modal
         } catch (error: any) {
             const message = error.message || 'Failed to send invite';
@@ -405,6 +503,13 @@ export default function LobbyScreen({
             setInvitingId(null);
         }
     };
+
+    // Clean up local pending invites once they appear in the actual lobby state
+    useEffect(() => {
+        if (lobby?.invitations && localPendingInvites.length > 0) {
+            setLocalPendingInvites(prev => prev.filter(p => !lobby.invitations.some((i: any) => i.toSummonerId === p.toSummonerId)));
+        }
+    }, [lobby?.invitations, localPendingInvites.length]);
 
     const renderInviteState = (state: string) => {
         if (!state) return 'Pending';
@@ -421,23 +526,22 @@ export default function LobbyScreen({
     const declinedInvites = sentInvites.filter((i: any) => i.state === 'Declined').length;
 
     const renderFriendName = (friend: any) => {
-        return friend?.gameName || friend?.name || 'Unknown player';
+        return friend?.gameName || friend?.name || friend?.summonerName || memberNames[friend?.summonerId] || 'Unknown player';
     };
 
     const renderFriendStatus = (friend: any) => {
         const status = (friend?.availability || '').toLowerCase();
-        if (!status) return 'offline';
+        if (!status) return activeTab === 'suggested' ? 'Suggested' : 'offline';
         return status;
     };
 
-    const filteredFriends = friends.filter((f) => {
-        const name = (f.gameName || f.name || '').toLowerCase();
+    const filteredFriends = (activeTab === 'suggested' ? suggestedPlayers : friends).filter((f) => {
+        const name = (f.gameName || f.name || f.summonerName || '').toLowerCase();
         const matchesSearch = name.includes(friendSearch.trim().toLowerCase());
-        const status = (f.availability || '').toLowerCase();
-        const isOnline = status === 'chat' || status === 'mobile';
-        if (availabilityFilter === 'online' && !isOnline) return false;
         return matchesSearch;
     });
+
+    console.log('[LobbyScreen] Filtered friends:', filteredFriends.length, 'Active tab:', activeTab);
 
     const availabilityColor = (availability?: string) => {
         const status = (availability || '').toLowerCase();
@@ -451,7 +555,7 @@ export default function LobbyScreen({
     const closeInviteModal = () => {
         setShowInviteModal(false);
         setFriendSearch('');
-        setAvailabilityFilter('all');
+        setActiveTab('suggested');
         setInvitingId(null);
     };
 
@@ -462,415 +566,449 @@ export default function LobbyScreen({
         }
     }, [showInviteModal]);
 
+    const isMatchmaking = gamePhase === 'Matchmaking';
+    const isReadyCheck = gamePhase === 'ReadyCheck';
+
+    // Animation for progress bar
+    const progressAnim = useRef(new Animated.Value(0)).current;
+
+    useEffect(() => {
+        if (isReadyCheck) {
+            // Reset and start animation
+            progressAnim.setValue(0);
+            Animated.timing(progressAnim, {
+                toValue: 1,
+                duration: 10000, // 10 seconds
+                useNativeDriver: false,
+                easing: Easing.linear
+            }).start();
+        } else {
+            // Reset when not in ready check
+            progressAnim.setValue(0);
+        }
+    }, [isReadyCheck, progressAnim]);
+
 
 
     // Show loading state if lobby is null
     if (!lobby) {
         return (
             <SafeAreaView style={styles.safeArea}>
-                <View style={styles.container}>
-                    <View style={styles.header}>
-                        <Text style={styles.title}>Lobby</Text>
-                        <Text style={styles.subtitle}>Loading...</Text>
+                <ImageBackground source={mapBackgrounds.default} style={styles.bg} imageStyle={styles.bgImage}>
+                    <View style={styles.overlay}>
+                        <ActivityIndicator size="large" color={GOLD} />
+                        <Text style={styles.loadingText}>Loading lobby...</Text>
                     </View>
-                    <View style={styles.loadingContainer}>
-                        <Text style={styles.loadingText}>Loading lobby data...</Text>
-                    </View>
-                </View>
+                </ImageBackground>
             </SafeAreaView>
         );
     }
 
+    const clockLabel = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    const subtitle = getSubtitle();
+    const disableFindMatch = !localMember?.isLeader || queuePenaltySeconds > 0;
+
+    const handleEnterQueue = async () => {
+        if (!lcuBridge.getIsConnected()) {
+            if (onError) onError('Not connected to desktop client');
+            return;
+        }
+
+        // Check gameflow phase to prevent entering queue while in game
+        try {
+            const phaseResult = await lcuBridge.request('/lol-gameflow/v1/gameflow-phase');
+            if (phaseResult.status === 200 && typeof phaseResult.content === 'string') {
+                const phase = phaseResult.content;
+                if (phase === 'InProgress' || phase === 'ChampSelect' || phase === 'GameStart' || phase === 'Reconnect') {
+                    if (onError) onError('Cannot start queue while in game.');
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn('[LobbyScreen] Failed to check gameflow phase', e);
+        }
+
+        onEnterQueue();
+    };
+
+    const handlePromoteMember = async (member: any) => {
+        if (!localMember?.isLeader) return;
+        if (!member?.summonerId) return;
+        try {
+            const res = await lcuBridge.request(`/lol-lobby/v2/lobby/members/${member.summonerId}/promote`, 'POST');
+            if (res.status && res.status >= 400) {
+                throw new Error(res.content?.message || `Failed to promote (${res.status})`);
+            }
+            if (onSuccess) onSuccess(`Promoted ${member.gameName || member.summonerName || 'player'}`);
+        } catch (error: any) {
+            console.error('[LobbyScreen] Failed to promote member:', error);
+            if (onError) onError(error?.message || 'Failed to promote member');
+        }
+    };
+
+    const handleKickMember = async (member: any) => {
+        if (!localMember?.isLeader) return;
+        if (!member?.summonerId) return;
+        try {
+            // LCU expects POST to /kick; DELETE on the member root often 500s
+            const res = await lcuBridge.request(`/lol-lobby/v2/lobby/members/${member.summonerId}/kick`, 'POST');
+            if (res.status && res.status >= 400) {
+                throw new Error(res.content?.message || `Failed to remove (${res.status})`);
+            }
+            if (onSuccess) onSuccess(`Removed ${member.gameName || member.summonerName || 'player'}`);
+        } catch (error: any) {
+            console.error('[LobbyScreen] Failed to remove member:', error);
+            if (onError) onError(error?.message || 'Failed to remove member');
+        }
+    };
+
+    const isFriendMember = (member: any) => {
+        if (!member) return false;
+        return friends.some((f) => {
+            if (member.puuid && f.puuid && member.puuid === f.puuid) return true;
+            if (member.summonerId && f.summonerId && member.summonerId === f.summonerId) return true;
+            return false;
+        });
+    };
+
+    const handleSendFriendRequest = async (member: any) => {
+        if (!member) return;
+        const tag = member.gameTag || member.tagLine;
+        const name = member.gameName || member.summonerName || member.displayName;
+        if (!name || !tag) {
+            if (onError) onError('Cannot send friend request without Riot ID and tag.');
+            return;
+        }
+        try {
+            const res = await lcuBridge.request('/lol-chat/v1/friend-requests', 'POST', {
+                name,
+                gameName: name,
+                tagline: tag,
+            });
+            if (res.status && res.status >= 400) {
+                throw new Error(res.content?.message || `Failed to send friend request (${res.status})`);
+            }
+            if (onSuccess) onSuccess(`Friend request sent to ${name}#${tag}`);
+        } catch (error: any) {
+            console.error('[LobbyScreen] Failed to send friend request:', error);
+            if (onError) onError(error?.message || 'Failed to send friend request');
+        }
+    };
+
+
+
+    // Determine progress bar color based on response
+    let progressBarColor = '#f0e6d2'; // Default beige/white
+    if (readyCheck?.playerResponse === 'Accepted') {
+        progressBarColor = GOLD; // Yellow
+    } else if (readyCheck?.playerResponse === 'Declined') {
+        progressBarColor = '#ef4444'; // Red
+    }
+
+    // Get map name for Ready Check
+    const readyCheckMapName = getMapName(lobby?.gameConfig?.mapId);
+
+
+
     return (
         <SafeAreaView style={styles.safeArea}>
-            <View style={styles.container}>
-                <View style={styles.header}>
-                    <Text style={styles.title}>Lobby</Text>
-                    <Text style={styles.subtitle}>{getSubtitle()}</Text>
-                    {isQuickplay && <Text style={styles.modeTag}>Quickplay</Text>}
-                    {estimatedQueueTime !== null && estimatedQueueTime !== undefined && (
-                        <Text style={styles.estimatedTimeText}>
-                            Tahmini kaç dakikada oyun bulacak: {formatEstimatedTime(estimatedQueueTime)}
-                        </Text>
-                    )}
-                    <View style={styles.headerStatusRow}>
-                        <Text style={styles.headerStatusText}>Members: {lobby?.members?.length || 0}</Text>
-                        <Text style={styles.headerStatusText}>Queue ID: {lobby?.gameConfig?.queueId || '-'}</Text>
+            <ImageBackground source={bgSource} style={styles.bg} imageStyle={styles.bgImage}>
+                <View style={styles.overlay}>
+                    {/* Main Lobby Content - Always Rendered */}
+                    <View style={styles.topBar}>
+                        {onOpenCreateLobby ? (
+                            <TouchableOpacity onPress={onOpenCreateLobby} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} style={styles.backButton}>
+                                <Text style={styles.backIcon}>{'<'}</Text>
+                                <Text style={styles.backText}>Mode select</Text>
+                            </TouchableOpacity>
+                        ) : (
+                            <View style={{ width: 60 }} />
+                        )}
                     </View>
-                </View>
 
-                <ScrollView style={styles.content}>
-                    <View style={styles.favoritesCard}>
-                        <View style={styles.favoritesHeader}>
-                            <Text style={styles.cardTitle}>Favorite champions</Text>
-                            <Text style={styles.cardSubtitle}>
-                                Pick per-lane priorities. We will hover them when champ select starts and optionally lock when it's your turn.
-                            </Text>
-                            <Text style={styles.cardStatus}>{favoritesLoaded ? 'Synced for this device' : 'Loading saved picks...'}</Text>
+                    <View style={styles.contentContainer}>
+                        <View style={styles.headerSection}>
+                            <Text style={styles.lobbyTitle}>LOBBY</Text>
+                            <Text style={styles.lobbySubtitle}>{subtitle}</Text>
                         </View>
-                        <View style={styles.favoritesToggles}>
-                            <View style={styles.toggleRow}>
-                                <View style={styles.toggleTextContainer}>
-                                    <Text style={styles.toggleLabel}>Auto hover favorites</Text>
-                                    <Text style={styles.toggleSub}>Pre-select your top choice instantly so your team sees your plan.</Text>
-                                </View>
-                                <Switch
-                                    value={editingFavorites.autoHover}
-                                    onValueChange={(val) => updateFavoriteToggle('autoHover', val)}
-                                    trackColor={{ false: '#404040', true: '#22c55e' }}
-                                    thumbColor="#ffffff"
-                                />
-                            </View>
-                            <View style={styles.toggleRow}>
-                                <View style={styles.toggleTextContainer}>
-                                    <Text style={styles.toggleLabel}>Auto lock on my turn</Text>
-                                    <Text style={styles.toggleSub}>Lock your hovered champ the moment your pick action starts.</Text>
-                                </View>
-                                <Switch
-                                    value={editingFavorites.autoLock}
-                                    onValueChange={(val) => updateFavoriteToggle('autoLock', val)}
-                                    trackColor={{ false: '#404040', true: '#4f46e5' }}
-                                    thumbColor="#ffffff"
-                                />
-                            </View>
-                            <View style={styles.toggleRow}>
-                                <View style={styles.toggleTextContainer}>
-                                    <Text style={styles.toggleLabel}>Fallback to Fill list</Text>
-                                    <Text style={styles.toggleSub}>If lane picks are banned or taken, try your Fill picks next.</Text>
-                                </View>
-                                <Switch
-                                    value={editingFavorites.allowFillFallback}
-                                    onValueChange={(val) => updateFavoriteToggle('allowFillFallback', val)}
-                                    trackColor={{ false: '#404040', true: '#22c55e' }}
-                                    thumbColor="#ffffff"
-                                />
-                            </View>
-                        </View>
-                        <View style={styles.laneGrid}>
-                            {lanes.map((lane) => {
-                                const lanePrefs = editingFavorites.preferences?.[lane] || [];
-                                return (
-                                    <View key={lane} style={styles.laneCard}>
-                                        <View style={styles.laneHeader}>
-                                            <View>
-                                                <Text style={styles.laneLabel}>{laneLabel(lane)}</Text>
-                                                <Text style={styles.laneSubLabel}>Top 3 choices</Text>
-                                            </View>
-                                            <Button
-                                                title={lanePrefs.length ? 'Edit' : 'Add'}
-                                                type="outline"
-                                                buttonStyle={styles.laneEditButton}
-                                                titleStyle={styles.laneEditTitle}
-                                                onPress={() => openFavoritesForLane(lane)}
+
+                        {/* Position Selector */}
+                        {showPositionSelector && (
+                            <View style={styles.positionSelectorContainer}>
+                                <TouchableOpacity style={styles.positionButton} onPress={() => openRolePicker(true)}>
+                                    <Text style={styles.positionLabel}>Primary</Text>
+                                    <View style={styles.positionIconContainer}>
+                                        <Image
+                                            source={ROLES.find(r => r.id === localMember?.firstPositionPreference)?.icon || require('../../static/roles/role-unselected.png')}
+                                            style={styles.positionIconImage}
+                                        />
+                                    </View>
+                                </TouchableOpacity>
+
+                                {localMember?.firstPositionPreference !== 'FILL' && (
+                                    <TouchableOpacity style={styles.positionButton} onPress={() => openRolePicker(false)}>
+                                        <Text style={styles.positionLabel}>Secondary</Text>
+                                        <View style={styles.positionIconContainer}>
+                                            <Image
+                                                source={ROLES.find(r => r.id === localMember?.secondPositionPreference)?.icon || require('../../static/roles/role-unselected.png')}
+                                                style={styles.positionIconImage}
                                             />
                                         </View>
-                                        <View style={styles.favoriteRow}>
-                                            {lanePrefs.length === 0 ? (
-                                                <Text style={styles.emptyFavoriteText}>No champions yet</Text>
-                                            ) : (
-                                                lanePrefs.map((id) => {
-                                                    const champ = championMap[id];
-                                                    return (
-                                                        <TouchableOpacity
-                                                            key={`${lane}-${id}`}
-                                                            style={styles.favoritePill}
-                                                            onPress={() => handleRemoveFavorite(lane, id)}
-                                                        >
-                                                            {champ?.image?.full ? (
-                                                                <Image
-                                                                    source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${champ.image.full}` }}
-                                                                    style={styles.favoriteImage}
-                                                                />
-                                                            ) : (
-                                                                <View style={[styles.favoriteImage, styles.favoriteImagePlaceholder]} />
-                                                            )}
-                                                            <Text style={styles.favoriteName} numberOfLines={1}>
-                                                                {champ?.name || `#${id}`}
-                                                            </Text>
-                                                            <Text style={styles.removeHint}>x</Text>
-                                                        </TouchableOpacity>
-                                                    );
-                                                })
-                                            )}
+                                    </TouchableOpacity>
+                                )}
+                            </View>
+                        )}
+
+                        <View style={styles.playerListContainer}>
+                            {(lobby?.members || []).map((member: any) => {
+                                const name =
+                                    member.gameName ||
+                                    member.summonerName ||
+                                    member.displayName ||
+                                    memberNames[member.summonerId] ||
+                                    member.name ||
+                                    'Unknown';
+                                const tag = member.gameTag || member.tagLine || '';
+                                return (
+                                    <View key={member.puuid || member.summonerId} style={styles.playerRow}>
+                                        <View style={styles.playerIconContainer}>
+                                            <Image
+                                                source={{ uri: `https://ddragon.leagueoflegends.com/cdn/14.23.1/img/profileicon/${member.summonerIconId || 29}.png` }}
+                                                style={styles.profileIcon}
+                                            />
                                         </View>
+                                        <View style={styles.playerInfo}>
+                                            <Text style={styles.playerName}>{name}</Text>
+                                            {!!tag && <Text style={styles.playerTag}>#{tag}</Text>}
+                                        </View>
+                                        {member.isLeader && (
+                                            <Text style={styles.crownIcon}>👑</Text>
+                                        )}
+                                        {member.summonerId !== localMember?.summonerId && (
+                                            <TouchableOpacity
+                                                onPress={() => setMemberMenu({ visible: true, member })}
+                                            >
+                                                <Image
+                                                    source={require('../../static/icon/banner-options.png')}
+                                                    style={styles.memberOptionsIcon}
+                                                />
+                                            </TouchableOpacity>
+                                        )}
                                     </View>
                                 );
                             })}
                         </View>
+
+                        <TouchableOpacity style={styles.inviteButton} onPress={() => setShowInviteModal(true)}>
+                            <Text style={styles.inviteButtonText}>+ Invite Others</Text>
+                        </TouchableOpacity>
                     </View>
 
-                    {/* Quickplay Setup */}
-                    {isQuickplay ? (
-                        <QuickplaySetup
-                            lobby={lobby}
-                            onReady={() => { }}
-                            onError={onError}
-                            onSuccess={onSuccess}
-                        />
-                    ) : (
-                        /* Standard Member List */
-                        <View style={styles.membersContainer}>
-                            {!lobby.members || lobby.members.length === 0 ? (
-                                <View style={styles.emptyStateContainer}>
-                                    <Text style={styles.emptyStateText}>No members in lobby</Text>
-                                    <Text style={styles.emptyStateSubtext}>Waiting for players to join...</Text>
-                                </View>
-                            ) : (
-                                lobby.members.map((member: any, index: number) => {
-                                    // Get member name from fetched names or fallback to member properties
-                                    // Check if we're still fetching (not in fetchedIdsRef means we haven't tried yet or it failed)
-                                    const isFetching = member.summonerId && !fetchedIdsRef.current.has(member.summonerId) && !memberNames[member.summonerId];
-                                    const memberName = memberNames[member.summonerId] ||
-                                        member.summonerName ||
-                                        member.displayName ||
-                                        member.gameName ||
-                                        member.name ||
-                                        (isFetching ? 'Loading...' : 'Unknown Player');
-
-                                    // Get profile icon ID
-                                    const profileIconId = member.summonerIconId ||
-                                        member.profileIconId ||
-                                        member.icon ||
-                                        29; // Default icon
-
-                                    const isLeader = member.isLeader || false;
-                                    const isLocalPlayer = member.puuid === localMember?.puuid;
-
-                                    return (
-                                        <View key={index} style={styles.memberRow}>
-                                            <View style={styles.memberInfo}>
-                                                <View style={styles.profileIconContainer}>
-                                                    <Image
-                                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/14.23.1/img/profileicon/${profileIconId}.png` }}
-                                                        style={styles.profileIcon}
-                                                    />
-                                                    {isLeader && (
-                                                        <View style={styles.leaderBadge}>
-                                                            <Text style={styles.leaderBadgeText}>👑</Text>
-                                                        </View>
-                                                    )}
-                                                </View>
-                                                <View style={styles.memberTextContainer}>
-                                                    {isFetching ? (
-                                                        <View style={styles.skeletonName} />
-                                                    ) : (
-                                                        <Text style={styles.memberName}>
-                                                            {memberName}
-                                                        </Text>
-                                                    )}
-                                                    <View style={styles.memberChipsRow}>
-                                                        {isLeader && <Text style={styles.leaderChip}>Group Leader</Text>}
-                                                        {isLocalPlayer && <Text style={styles.localPlayerTag}>you</Text>}
-                                                    </View>
-                                                </View>
-                                            </View>
-
-                                            <View style={styles.actionsRow}>
-                                                {/* Role Selection (Only for local member in Draft modes) */}
-                                                {isLocalPlayer && lobby?.gameConfig?.showPositionSelector && (
-                                                    <View style={styles.roleContainer}>
-                                                        <TouchableOpacity onPress={() => openRolePicker(true)} style={styles.roleButton}>
-                                                            <Text style={styles.roleText}>{member.firstPositionPreference || 'FILL'}</Text>
-                                                        </TouchableOpacity>
-                                                        <TouchableOpacity onPress={() => openRolePicker(false)} style={styles.roleButton}>
-                                                            <Text style={styles.roleText}>{member.secondPositionPreference || 'FILL'}</Text>
-                                                        </TouchableOpacity>
-                                                    </View>
-                                                )}
-
-                                                {localMember?.isLeader && !isLocalPlayer && (
-                                                    <View style={styles.memberActions}>
-                                                        <Button
-                                                            title="Promote"
-                                                            type="outline"
-                                                            onPress={async () => {
-                                                                try {
-                                                                    await lcuBridge.request(`/lol-lobby/v2/lobby/members/${member.summonerId}/promote`, 'POST');
-                                                                } catch (err: any) {
-                                                                    console.error('Failed to promote', err?.message);
-                                                                }
-                                                            }}
-                                                            buttonStyle={styles.smallOutline}
-                                                            titleStyle={styles.actionTitle}
-                                                            containerStyle={styles.actionContainer}
-                                                        />
-                                                        <Button
-                                                            title="Kick"
-                                                            type="outline"
-                                                            onPress={async () => {
-                                                                try {
-                                                                    await lcuBridge.request(`/lol-lobby/v2/lobby/members/${member.summonerId}/kick`, 'POST');
-                                                                } catch (err: any) {
-                                                                    console.error('Failed to kick', err?.message);
-                                                                }
-                                                            }}
-                                                            buttonStyle={styles.smallDanger}
-                                                            titleStyle={styles.actionTitle}
-                                                            containerStyle={styles.actionContainer}
-                                                        />
-                                                    </View>
-                                                )}
-                                            </View>
-                                        </View>
-                                    );
-                                })
-                            )}
-                        </View>
-                    )}
-
-                    <View style={styles.inviteButtonRow}>
-                        <Button
-                            title="Invite friends"
-                            onPress={() => setShowInviteModal(true)}
-                            buttonStyle={styles.primaryButton}
-                            containerStyle={{ width: '100%' }}
-                        />
-                    </View>
-                </ScrollView>
-
-                <View style={styles.footer}>
-                    {onOpenCreateLobby && (
-                        <Button
-                            title="Switch Lobby Mode"
-                            onPress={() => {
-                                if (onOpenCreateLobby) onOpenCreateLobby();
-                            }}
-                            buttonStyle={styles.secondaryButton}
-                            containerStyle={styles.buttonContainer}
-                            type="outline"
-                        />
-                    )}
-                    <Button
-                        title="Find Match"
-                        onPress={onEnterQueue}
-                        buttonStyle={styles.queueButton}
-                        containerStyle={styles.buttonContainer}
-                        disabled={!localMember?.isLeader}
-                    />
-                    <Button
-                        title="Leave Lobby"
-                        onPress={onLeaveLobby}
-                        buttonStyle={styles.leaveButton}
-                        containerStyle={styles.buttonContainer}
-                    />
-                </View>
-
-                <RolePicker
-                    visible={showRolePicker}
-                    onSelect={handleRoleSelect}
-                    onClose={() => setShowRolePicker(false)}
-                    currentRole={pickingFirstRole ? localMember?.firstPositionPreference : localMember?.secondPositionPreference}
-                />
-                <Modal
-                    visible={showFavoriteGrid}
-                    animationType="slide"
-                    transparent
-                    onRequestClose={() => setShowFavoriteGrid(false)}
-                >
-                    <View style={styles.modalRoot} pointerEvents="box-none">
-                        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowFavoriteGrid(false)} />
-                        <View style={[styles.modalCard, styles.favoritesModalCard]}>
-                            <View style={styles.modalHeader}>
-                                <Text style={styles.modalTitle}>
-                                    {activeLane ? `Select favorites • ${laneLabel(activeLane)}` : 'Select favorites'}
+                    <View style={styles.footer}>
+                        {queuePenaltySeconds > 0 && (
+                            <View style={styles.penaltyBanner}>
+                                <Text style={styles.penaltyTitle}>LOW PRIORITY QUEUE</Text>
+                                <Text style={styles.penaltyText}>
+                                    Wait time remaining: {formatTimeInQueue(queuePenaltySeconds)}
                                 </Text>
-                                <Button
-                                    title="Done"
-                                    type="clear"
-                                    titleStyle={styles.modalClose}
-                                    onPress={() => setShowFavoriteGrid(false)}
-                                />
                             </View>
-                            {loadingChamps ? (
-                                <View style={styles.modalLoading}>
-                                    <ActivityIndicator size="large" color="#4f46e5" />
-                                    <Text style={styles.modalLoadingText}>Loading champions...</Text>
-                                </View>
-                            ) : (
-                                <ChampionGrid
-                                    champions={champions}
-                                    onSelect={handleFavoriteSelect}
-                                    version={ddragonVersion}
-                                />
-                            )}
-                        </View>
+                        )}
+                        <TouchableOpacity
+                            style={[styles.findMatchButton, (disableFindMatch || isMatchmaking || isReadyCheck) && styles.findMatchButtonDisabled]}
+                            onPress={handleEnterQueue}
+                            disabled={disableFindMatch || isMatchmaking || isReadyCheck}
+                        >
+                            <Text style={styles.findMatchText}>{isMatchmaking ? 'FINDING MATCH...' : isReadyCheck ? 'MATCH FOUND' : 'FIND MATCH'}</Text>
+                        </TouchableOpacity>
                     </View>
-                </Modal>
-                <Modal
-                    visible={showInviteModal}
-                    animationType="slide"
-                    transparent
-                    onRequestClose={closeInviteModal}
-                >
-                    <View style={styles.modalRoot} pointerEvents="box-none">
-                        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeInviteModal} />
-                        <View style={styles.modalCard}>
-                            <View style={styles.modalHeader}>
-                                <Text style={styles.modalTitle}>Invite friends</Text>
-                                <Button
-                                    title="Close"
-                                    type="clear"
-                                    titleStyle={styles.modalClose}
-                                    onPress={closeInviteModal}
+
+                    {/* Dark Overlay when Matchmaking or ReadyCheck */}
+                    {(isMatchmaking || isReadyCheck) && (
+                        <View style={styles.matchmakingDimOverlay} />
+                    )}
+
+                    {/* Finding Match Top Box */}
+                    {isMatchmaking && (
+                        <View style={styles.matchmakingContainer}>
+                            <ImageBackground source={bgSource} style={styles.matchmakingBg} imageStyle={styles.matchmakingBgImage}>
+                                <View style={styles.matchmakingContent}>
+                                    <View style={styles.matchmakingTopRow}>
+                                        <Text style={styles.matchmakingTitle}>FINDING MATCH</Text>
+                                        <TouchableOpacity onPress={onCancelQueue} style={styles.matchmakingCloseButton}>
+                                            <Text style={styles.matchmakingCloseIcon}>×</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                    <Text style={styles.matchmakingSubtitle}>{subtitle}</Text>
+
+                                    <View style={styles.matchmakingTimerContainer}>
+                                        <Text style={styles.matchmakingTimer}>{formatTimeInQueue(timeInQueue || 0)}</Text>
+                                        {estimatedQueueTime ? (
+                                            <Text style={styles.matchmakingEstimated}>Estimated: {formatTimeInQueue(estimatedQueueTime)}</Text>
+                                        ) : null}
+                                    </View>
+                                </View>
+                            </ImageBackground>
+                        </View>
+                    )}
+
+                    {/* Match Found / Ready Check UI */}
+                    {isReadyCheck && (
+                        <View style={styles.readyCheckContainer}>
+                            <Text style={styles.readyCheckTitle}>MATCH FOUND</Text>
+                            <Text style={styles.readyCheckSubtitle}>{readyCheckMapName}</Text>
+
+                            <View style={styles.readyCheckProgressContainer}>
+                                <Animated.View
+                                    style={[
+                                        styles.readyCheckProgressBar,
+                                        {
+                                            backgroundColor: progressBarColor,
+                                            width: progressAnim.interpolate({
+                                                inputRange: [0, 1],
+                                                outputRange: ['0%', '100%']
+                                            })
+                                        }
+                                    ]}
                                 />
                             </View>
-                            {loadingFriends ? (
-                                <View style={styles.modalLoading}>
-                                    <ActivityIndicator size="large" color="#4f46e5" />
-                                    <Text style={styles.modalLoadingText}>Loading friends...</Text>
-                                </View>
-                            ) : friends.length === 0 ? (
-                                <View style={styles.modalLoading}>
-                                    <Text style={styles.modalLoadingText}>No friends found.</Text>
-                                    <Button title="Refresh" onPress={loadFriends} type="outline" />
-                                </View>
-                            ) : (
-                                <>
-                                    <View style={styles.searchRow}>
-                                        <View style={styles.searchInputWrapper}>
-                                            <TextInput
-                                                value={friendSearch}
-                                                onChangeText={setFriendSearch}
-                                                placeholder="Search friends..."
-                                                placeholderTextColor="#6b7280"
-                                                style={styles.searchInput}
-                                            />
-                                        </View>
-                                        <View style={styles.filterButtonsCompact}>
-                                            <Button
-                                                title="All"
-                                                type={availabilityFilter === 'all' ? 'solid' : 'outline'}
-                                                onPress={() => setAvailabilityFilter('all')}
-                                                buttonStyle={availabilityFilter === 'all' ? styles.modeButtonActive : styles.modeButton}
-                                                titleStyle={styles.modeButtonTitle}
-                                                containerStyle={styles.filterButtonContainer}
-                                            />
-                                            <Button
-                                                title="Online"
-                                                type={availabilityFilter === 'online' ? 'solid' : 'outline'}
-                                                onPress={() => setAvailabilityFilter('online')}
-                                                buttonStyle={availabilityFilter === 'online' ? styles.modeButtonActive : styles.modeButton}
-                                                titleStyle={styles.modeButtonTitle}
-                                                containerStyle={styles.filterButtonContainer}
-                                            />
-                                        </View>
-                                    </View>
 
-                                    <View style={styles.inviteSummaryRow}>
-                                        <Text style={styles.inviteSummaryText}>Pending: {pendingInvites}</Text>
-                                        <Text style={styles.inviteSummaryText}>Accepted: {acceptedInvites}</Text>
-                                        <Text style={styles.inviteSummaryText}>Declined: {declinedInvites}</Text>
-                                    </View>
+                            <TouchableOpacity
+                                style={styles.acceptButton}
+                                onPress={onAcceptMatch}
+                                disabled={readyCheck?.playerResponse === 'Accepted'}
+                            >
+                                <Text style={styles.acceptButtonText}>{readyCheck?.playerResponse === 'Accepted' ? 'ACCEPTED' : 'ACCEPT!'}</Text>
+                            </TouchableOpacity>
 
+                            <TouchableOpacity
+                                style={styles.declineButton}
+                                onPress={onDeclineMatch}
+                                disabled={readyCheck?.playerResponse === 'Declined'}
+                            >
+                                <Text style={styles.declineButtonText}>DECLINE</Text>
+                            </TouchableOpacity>
+                        </View>
+                    )}
+
+                    <RolePicker
+                        visible={showRolePicker}
+                        onSelect={handleRoleSelect}
+                        onClose={() => setShowRolePicker(false)}
+                        currentRole={pickingFirstRole ? localMember?.firstPositionPreference : localMember?.secondPositionPreference}
+                    />
+                    <Modal
+                        visible={showFavoriteGrid}
+                        animationType="slide"
+                        transparent
+                        onRequestClose={() => setShowFavoriteGrid(false)}
+                    >
+                        <View style={styles.modalRoot} pointerEvents="box-none">
+                            <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowFavoriteGrid(false)} />
+                            <View style={[styles.modalCard, styles.favoritesModalCard]}>
+                                <View style={styles.modalHeader}>
+                                    <Text style={styles.modalTitle}>
+                                        {activeLane ? `Select favorites ? ${laneLabel(activeLane)}` : 'Select favorites'}
+                                    </Text>
+                                    <Button
+                                        title="Done"
+                                        type="clear"
+                                        titleStyle={styles.modalClose}
+                                        onPress={() => setShowFavoriteGrid(false)}
+                                    />
+                                </View>
+                                {loadingChamps ? (
+                                    <View style={styles.modalLoading}>
+                                        <ActivityIndicator size="large" color={GOLD} />
+                                        <Text style={styles.modalLoadingText}>Loading champions...</Text>
+                                    </View>
+                                ) : (
+                                    <ChampionGrid
+                                        champions={champions}
+                                        onSelect={handleFavoriteSelect}
+                                        version={ddragonVersion}
+                                    />
+                                )}
+                            </View>
+                        </View>
+                    </Modal>
+                    <Modal
+                        visible={showInviteModal}
+                        animationType="slide"
+                        transparent
+                        onRequestClose={closeInviteModal}
+                    >
+                        <View style={styles.modalRoot} pointerEvents="box-none">
+                            <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeInviteModal} />
+                            <View style={styles.modalCard}>
+                                <View style={styles.modalHeader}>
+                                    <View style={styles.modalHeaderTitleRow}>
+                                        <Text style={styles.modalTitle}>Invite friends</Text>
+                                        <TouchableOpacity onPress={loadData} style={styles.refreshButton}>
+                                            <Text style={styles.refreshIcon}>↻</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                    <TouchableOpacity onPress={closeInviteModal} style={styles.closeButton}>
+                                        <Text style={styles.closeButtonText}>×</Text>
+                                    </TouchableOpacity>
+                                </View>
+
+                                <View style={styles.searchRow}>
+                                    <View style={styles.searchInputWrapper}>
+                                        <TextInput
+                                            value={friendSearch}
+                                            onChangeText={setFriendSearch}
+                                            placeholder="Summoner Name"
+                                            placeholderTextColor="#6b7280"
+                                            style={styles.searchInput}
+                                        />
+                                    </View>
+                                    <TouchableOpacity style={styles.addButton}>
+                                        <Text style={styles.addButtonText}>+</Text>
+                                    </TouchableOpacity>
+                                </View>
+
+                                <View style={styles.tabRow}>
+                                    <TouchableOpacity
+                                        style={[styles.tabButton, activeTab === 'suggested' && styles.tabButtonActive]}
+                                        onPress={() => setActiveTab('suggested')}
+                                    >
+                                        <Text style={[styles.tabText, activeTab === 'suggested' && styles.tabTextActive]}>Suggested</Text>
+                                    </TouchableOpacity>
+                                    <View style={styles.tabSeparator} />
+                                    <TouchableOpacity
+                                        style={[styles.tabButton, activeTab === 'friends' && styles.tabButtonActive]}
+                                        onPress={() => setActiveTab('friends')}
+                                    >
+                                        <Text style={[styles.tabText, activeTab === 'friends' && styles.tabTextActive]}>Friends list</Text>
+                                    </TouchableOpacity>
+                                </View>
+                                <View style={styles.tabUnderline} />
+
+                                {loadingFriends ? (
+                                    <View style={styles.modalLoading}>
+                                        <ActivityIndicator size="large" color={GOLD} />
+                                        <Text style={styles.modalLoadingText}>Loading...</Text>
+                                    </View>
+                                ) : filteredFriends.length === 0 ? (
+                                    <View style={styles.modalLoading}>
+                                        <Text style={styles.modalLoadingText}>
+                                            {friendSearch ? 'No matches found.' : activeTab === 'suggested' ? 'No suggestions.' : 'No friends found.'}
+                                        </Text>
+                                        <Button title="Refresh" onPress={loadData} type="outline" />
+                                    </View>
+                                ) : (
                                     <ScrollView style={styles.friendList}>
-                                        {(filteredFriends.length ? filteredFriends : friends).map((friend: any) => {
+                                        {filteredFriends.map((friend: any, index: number) => {
                                             const name = renderFriendName(friend);
                                             const status = renderFriendStatus(friend);
                                             const existing = combinedInvites.find((inv) => inv.toSummonerId === friend.summonerId);
                                             const isPending = existing?.state === 'Pending';
-                                            const disabled = !!invitingId || !friend.summonerId || isPending;
+                                            const isOffline = (friend.availability || '').toLowerCase() === 'offline';
+                                            const disabled = !!invitingId || !friend.summonerId || isPending || isOffline;
+                                            const key = friend.puuid || friend.id || friend.summonerId || `friend-${index}`;
+
                                             return (
-                                                <View key={friend.puuid || friend.id || name} style={styles.friendRow}>
+                                                <View key={key} style={styles.friendRow}>
                                                     <View>
                                                         <Text style={styles.friendName}>{name}</Text>
                                                         <Text style={styles.friendStatus}>
@@ -878,570 +1016,838 @@ export default function LobbyScreen({
                                                             {status}
                                                         </Text>
                                                     </View>
-                                                    <Button
-                                                        title={
-                                                            isPending
-                                                                ? 'Invited'
-                                                                : invitingId === friend.summonerId
-                                                                    ? 'Inviting...'
-                                                                    : 'Invite'
-                                                        }
+                                                    <TouchableOpacity
                                                         onPress={() => sendInvite(friend.summonerId)}
                                                         disabled={disabled}
-                                                        buttonStyle={styles.inviteAction}
-                                                        containerStyle={styles.inviteActionContainer}
-                                                    />
+                                                        style={[styles.inviteAction, disabled && styles.inviteActionDisabled]}
+                                                    >
+                                                        <Text style={styles.inviteActionText}>
+                                                            {isPending ? 'Invited' : invitingId === friend.summonerId ? '...' : 'Invite'}
+                                                        </Text>
+                                                    </TouchableOpacity>
                                                 </View>
                                             );
                                         })}
                                     </ScrollView>
-                                </>
-                            )}
+                                )}
 
-                            {combinedInvites.length > 0 && (
-                                <View style={styles.invitationList}>
-                                    <Text style={styles.sectionSubtitle}>Sent invites</Text>
-                                    {combinedInvites.map((invite: any, idx: number) => (
-                                        <View key={invite.invitationId || invite.id || invite.toSummonerId || idx} style={styles.invitationRow}>
-                                            <Text style={styles.invitationName}>{memberNames[invite.toSummonerId] || 'Unknown player'}</Text>
-                                            <Text style={styles.inviteStatus}>{renderInviteState(invite.state)}</Text>
-                                        </View>
-                                    ))}
+                                <View style={styles.invitedSection}>
+                                    <Text style={styles.invitedHeader}>Invited</Text>
+                                    <View style={styles.invitedSeparator} />
+                                    <ScrollView style={styles.invitationList}>
+                                        {combinedInvites.length > 0 ? (
+                                            combinedInvites.map((invite: any, idx: number) => (
+                                                <View key={`${invite.invitationId || invite.id || invite.toSummonerId}-${idx}`} style={styles.invitationRow}>
+                                                    <Text style={styles.invitationName}>{memberNames[invite.toSummonerId] || 'Unknown player'}</Text>
+                                                    <Text style={styles.inviteStatus}>{renderInviteState(invite.state)}</Text>
+                                                </View>
+                                            ))
+                                        ) : (
+                                            <Text style={styles.noInvitesText}>No active invitations</Text>
+                                        )}
+                                    </ScrollView>
                                 </View>
-                            )}
+                            </View>
                         </View>
-                    </View>
-                </Modal>
-            </View>
-        </SafeAreaView>
+                    </Modal>
+                    <Modal
+                        visible={memberMenu.visible}
+                        transparent
+                        animationType="slide"
+                        onRequestClose={() => setMemberMenu({ visible: false, member: null })}
+                    >
+                        <View style={styles.sheetOverlay}>
+                            <TouchableOpacity
+                                style={StyleSheet.absoluteFill}
+                                activeOpacity={1}
+                                onPress={() => setMemberMenu({ visible: false, member: null })}
+                            />
+                            <View style={styles.sheetContainer}>
+                                <View style={styles.sheetHeader}>
+                                    <View style={styles.sheetHandle} />
+                                    <View style={styles.sheetMemberInfo}>
+                                        <View style={styles.sheetIconContainer}>
+                                            <Image
+                                                source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/profileicon/${memberMenu.member?.summonerIconId || 29}.png` }}
+                                                style={styles.sheetProfileIcon}
+                                            />
+                                        </View>
+                                        <View>
+                                            <Text style={styles.sheetMemberName}>
+                                                {memberMenu.member?.gameName || memberMenu.member?.summonerName || memberNames[memberMenu.member?.summonerId] || 'Player'}
+                                            </Text>
+                                        </View>
+                                    </View>
+                                </View>
+
+                                <View style={styles.sheetActions}>
+                                    {/* Promote Action */}
+                                    {localMember?.isLeader && !memberMenu.member?.isLeader && (
+                                        <TouchableOpacity
+                                            style={styles.sheetActionBtn}
+                                            onPress={() => {
+                                                handlePromoteMember(memberMenu.member);
+                                                setMemberMenu({ visible: false, member: null });
+                                            }}
+                                        >
+                                            <View style={styles.sheetActionIconWrapper}>
+                                                <Image source={require('../../static/icon/banner-promote.png')} style={[styles.sheetActionIcon, { tintColor: GOLD }]} />
+                                            </View>
+                                            <Text style={styles.sheetActionLabel}>Promote to Owner</Text>
+                                        </TouchableOpacity>
+                                    )}
+
+                                    {/* Add Friend Action */}
+                                    {!isFriendMember(memberMenu.member) && (memberMenu.member?.gameTag || memberMenu.member?.tagLine) && (
+                                        <TouchableOpacity
+                                            style={styles.sheetActionBtn}
+                                            onPress={() => {
+                                                handleSendFriendRequest(memberMenu.member);
+                                                setMemberMenu({ visible: false, member: null });
+                                            }}
+                                        >
+                                            <View style={styles.sheetActionIconWrapper}>
+                                                <Image source={require('../../static/icon/banner-add-friend.png')} style={[styles.sheetActionIcon, { tintColor: GOLD }]} />
+                                            </View>
+                                            <Text style={styles.sheetActionLabel}>Add Friend</Text>
+                                        </TouchableOpacity>
+                                    )}
+
+                                    {/* Kick Action */}
+                                    {localMember?.isLeader && !memberMenu.member?.isLeader && (
+                                        <TouchableOpacity
+                                            style={[styles.sheetActionBtn, styles.sheetActionBtnDestructive]}
+                                            onPress={() => {
+                                                handleKickMember(memberMenu.member);
+                                                setMemberMenu({ visible: false, member: null });
+                                            }}
+                                        >
+                                            <View style={styles.sheetActionIconWrapper}>
+                                                <Image source={require('../../static/icon/banner-kick.png')} style={[styles.sheetActionIcon, { tintColor: '#ef4444' }]} />
+                                            </View>
+                                            <Text style={[styles.sheetActionLabel, styles.sheetDestructiveLabel]}>Kick from Lobby</Text>
+                                        </TouchableOpacity>
+                                    )}
+                                </View>
+
+                                <TouchableOpacity
+                                    style={styles.sheetCancelBtn}
+                                    onPress={() => setMemberMenu({ visible: false, member: null })}
+                                >
+                                    <Text style={styles.sheetCancelText}>Cancel</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </Modal>
+                </View >
+            </ImageBackground >
+        </SafeAreaView >
     );
 }
-
 const styles = StyleSheet.create({
     safeArea: {
         flex: 1,
-        backgroundColor: '#0a0a0a',
+        backgroundColor: '#06101c',
     },
-    container: {
+    bg: { flex: 1 },
+    bgImage: { resizeMode: 'cover', },
+    overlay: {
         flex: 1,
-        backgroundColor: '#0a0a0a',
-        paddingHorizontal: 16,
+        backgroundColor: 'rgba(0, 0, 0, 0.3)',
+        paddingHorizontal: 20,
         paddingTop: 16,
-        paddingBottom: 12,
+        paddingBottom: 20,
     },
-    header: {
-        marginTop: 40,
+    topBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
         marginBottom: 20,
+    },
+    backButton: {
+        flexDirection: 'row',
         alignItems: 'center',
+        gap: 4,
     },
-    title: {
-        fontSize: 28,
-        fontWeight: 'bold',
-        color: '#ffffff',
-        marginBottom: 5,
-    },
-    subtitle: {
-        fontSize: 16,
-        color: '#a3a3a3',
-    },
-    modeTag: {
-        color: '#eab308',
-        fontSize: 12,
-        fontWeight: 'bold',
-        marginTop: 5,
-        textTransform: 'uppercase',
-    },
-    content: {
-        flex: 1,
-    },
-    favoritesCard: {
-        backgroundColor: '#111111',
-        borderRadius: 12,
-        borderWidth: 1,
-        borderColor: '#1f1f1f',
-        padding: 16,
-        marginBottom: 16,
-    },
-    favoritesHeader: {
-        gap: 6,
-        marginBottom: 12,
-    },
-    cardTitle: {
-        color: '#ffffff',
-        fontSize: 18,
+    backIcon: {
+        color: GOLD,
+        fontSize: 20,
         fontWeight: '700',
     },
-    cardSubtitle: {
-        color: '#9ca3af',
-        fontSize: 13,
-        lineHeight: 18,
-    },
-    cardStatus: {
-        color: '#22c55e',
-        fontSize: 12,
+    backText: {
+        color: GOLD,
+        fontSize: 16,
         fontWeight: '600',
     },
-    favoritesToggles: {
-        gap: 12,
-        marginBottom: 12,
-    },
-    toggleRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        gap: 12,
-    },
-    toggleTextContainer: {
+    contentContainer: {
         flex: 1,
-        gap: 2,
-    },
-    toggleLabel: {
-        color: '#e5e7eb',
-        fontSize: 14,
-        fontWeight: '600',
-    },
-    toggleSub: {
-        color: '#9ca3af',
-        fontSize: 12,
-    },
-    laneGrid: {
-        gap: 10,
-    },
-    laneCard: {
-        borderWidth: 1,
-        borderColor: '#1f1f1f',
-        borderRadius: 10,
-        padding: 12,
-        backgroundColor: '#0d0d0d',
-    },
-    laneHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
         alignItems: 'center',
+        paddingTop: 20,
+    },
+    headerSection: {
+        alignItems: 'center',
+        marginBottom: 40,
+    },
+    lobbyTitle: {
+        fontSize: 32,
+        fontWeight: '800',
+        color: OFFWHITE,
         marginBottom: 8,
+        letterSpacing: 1,
+        fontFamily: 'serif',
     },
-    laneLabel: {
-        color: '#ffffff',
+    lobbySubtitle: {
         fontSize: 16,
-        fontWeight: '700',
+        color: '#cfd5dd',
+        textAlign: 'center',
     },
-    laneSubLabel: {
-        color: '#9ca3af',
-        fontSize: 11,
-        textTransform: 'uppercase',
-        letterSpacing: 0.8,
-    },
-    laneEditButton: {
-        borderColor: '#4f46e5',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
+    playerListContainer: {
+        width: '100%',
+        borderWidth: 1,
+        borderColor: GOLD,
+        padding: 16,
+        marginBottom: 0,
+        gap: 12,
         borderRadius: 8,
+        backgroundColor: 'rgba(8, 13, 18, 0.4)',
     },
-    laneEditTitle: {
-        color: '#e5e7eb',
-        fontSize: 12,
-    },
-    favoriteRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: 8,
-    },
-    favoritePill: {
+    playerRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        backgroundColor: '#1a1a1a',
-        borderRadius: 10,
+        gap: 12,
+        paddingVertical: 8,
+        borderBottomWidth: 1,
+        borderBottomColor: GOLD,
+    },
+    playerIconContainer: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
         borderWidth: 1,
-        borderColor: '#262626',
+        borderColor: GOLD,
+        overflow: 'hidden',
     },
-    favoriteImage: {
-        width: 32,
-        height: 32,
-        borderRadius: 6,
-        borderWidth: 1,
-        borderColor: '#2f2f2f',
+    profileIcon: {
+        width: '100%',
+        height: '100%',
     },
-    favoriteImagePlaceholder: {
-        backgroundColor: '#1f2937',
+    playerInfo: {
+        flex: 1,
     },
-    favoriteName: {
+    playerName: {
+        color: GOLD,
+        fontWeight: '700',
+        fontSize: 16,
+    },
+    playerTag: {
         color: '#e5e7eb',
-        maxWidth: 120,
-    },
-    removeHint: {
-        color: '#9ca3af',
-        fontSize: 12,
-        marginLeft: 4,
-    },
-    emptyFavoriteText: {
-        color: '#6b7280',
         fontSize: 12,
     },
-    inviteButtonRow: {
+
+    crownIcon: {
+        fontSize: 16,
+        color: GOLD,
+    },
+ 
+    memberOptionsIcon: {
+        width: 36,
+        height: 36,
+        resizeMode: 'contain',
+    },
+    // Updated Sheet Styles
+    sheetOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.6)',
+        justifyContent: 'flex-end',
+    },
+    // ... other sheet styles are already correct ...
+
+    sheetContainer: {
+        backgroundColor: '#0a0f14',
+        borderTopLeftRadius: 16,
+        borderTopRightRadius: 16,
+        borderTopWidth: 1,
+        borderTopColor: GOLD,
+        paddingBottom: 40,
+        paddingHorizontal: 20,
+    },
+    sheetHeader: {
+        alignItems: 'center',
+        paddingVertical: 12,
         marginBottom: 16,
     },
-    primaryButton: {
-        backgroundColor: '#4f46e5',
+    sheetHandle: {
+        width: 40,
+        height: 4,
+        backgroundColor: '#3f3f46',
+        borderRadius: 2,
+        marginBottom: 16,
+    },
+    sheetMemberInfo: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        alignSelf: 'flex-start',
+    },
+    sheetIconContainer: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        borderWidth: 1,
+        borderColor: GOLD,
+        overflow: 'hidden',
+    },
+    sheetProfileIcon: {
+        width: '100%',
+        height: '100%',
+    },
+    sheetMemberName: {
+        color: '#fff',
+        fontSize: 18,
+        fontWeight: 'bold',
+    },
+    sheetMemberTag: {
+        color: '#9ca3af',
+        fontSize: 14,
+    },
+    sheetActions: {
+        gap: 8,
+    },
+    sheetActionBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 14,
+        paddingHorizontal: 12,
+        backgroundColor: 'rgba(255,255,255,0.03)',
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: 'rgba(199, 179, 123, 0.2)',
+    },
+    sheetActionBtnDestructive: {
+        borderColor: 'rgba(239, 68, 68, 0.3)',
+        backgroundColor: 'rgba(239, 68, 68, 0.05)',
+        marginTop: 8,
+    },
+    sheetActionIconWrapper: {
+        width: 32,
+        alignItems: 'center',
+        marginRight: 12,
+    },
+    sheetActionIcon: {
+        width: 20,
+        height: 20,
+        resizeMode: 'contain',
+    },
+    sheetActionLabel: {
+        color: '#e5e7eb',
+        fontSize: 16,
+        fontWeight: '600',
+    },
+    sheetDestructiveLabel: {
+        color: '#ef4444',
+    },
+    sheetCancelBtn: {
+        marginTop: 16,
+        alignItems: 'center',
         paddingVertical: 12,
-        borderRadius: 10,
+    },
+    sheetCancelText: {
+        color: '#9ca3af',
+        fontSize: 16,
+        fontWeight: '600',
+    },
+    inviteButton: {
+        width: '100%',
+        borderWidth: 1,
+        borderColor: GOLD,
+        borderTopWidth: 0,
+        paddingVertical: 12,
+        alignItems: 'center',
+        backgroundColor: 'rgba(8, 13, 18, 0.6)',
+        marginTop: -1,
+    },
+    inviteButtonText: {
+        color: '#cfd5dd',
+        fontSize: 16,
+        fontWeight: '500',
+    },
+    footer: {
+        paddingTop: 20,
+    },
+    findMatchButton: {
+        backgroundColor: 'rgba(30, 35, 40, 0.9)',
+        borderWidth: 2,
+        borderColor: GOLD,
+        paddingVertical: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    findMatchButtonDisabled: {
+        opacity: 0.5,
+        borderColor: '#6b7280',
+    },
+    findMatchText: {
+        color: GOLD,
+        fontSize: 18,
+        fontWeight: '800',
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+        fontFamily: 'serif',
+    },
+    loadingText: {
+        color: OFFWHITE,
+        fontSize: 16,
     },
     modalRoot: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        padding: 16,
-    },
-    modalOverlay: {
-        position: 'absolute',
-        top: 0,
-        bottom: 0,
-        left: 0,
-        right: 0,
         backgroundColor: 'rgba(0,0,0,0.7)',
     },
+    modalOverlay: {
+        ...StyleSheet.absoluteFillObject,
+    },
     modalCard: {
-        backgroundColor: '#0f0f0f',
-        borderRadius: 12,
+        width: '90%',
+        height: '80%', // Changed from maxHeight to height to ensure flex children render
+        backgroundColor: '#091428',
         borderWidth: 1,
-        borderColor: '#1f1f1f',
-        width: '100%',
-        maxHeight: '80%',
-        padding: 16,
+        borderColor: GOLD,
+        borderRadius: 4,
+        padding: 0,
+        overflow: 'hidden',
     },
     favoritesModalCard: {
-        height: '90%',
-        paddingBottom: 8,
+        height: '80%',
     },
     modalHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 12,
+        padding: 16,
+        borderBottomWidth: 1,
+        borderBottomColor: '#1e282d',
+        backgroundColor: '#010a13',
     },
     modalTitle: {
-        color: '#fff',
         fontSize: 18,
         fontWeight: '700',
+        color: GOLD,
+        textTransform: 'uppercase',
     },
-    modalClose: {
-        color: '#9ca3af',
-        fontSize: 14,
-    },
+
+
     modalLoading: {
+        padding: 40,
         alignItems: 'center',
-        padding: 20,
+        gap: 16,
     },
     modalLoadingText: {
-        color: '#9ca3af',
-        marginTop: 8,
+        color: '#888',
+    },
+    searchRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        gap: 12,
+    },
+    searchInputWrapper: {
+        flex: 1,
+        height: 40,
+        borderWidth: 1,
+        borderColor: GOLD,
+        justifyContent: 'center',
+    },
+    searchInput: {
+        color: '#f0e6d2',
+        paddingHorizontal: 12,
+        fontSize: 14,
     },
     friendList: {
-        maxHeight: 300,
+        flex: 1,
     },
     friendRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingVertical: 10,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
         borderBottomWidth: 1,
-        borderBottomColor: '#1f1f1f',
+        borderBottomColor: 'rgba(255,255,255,0.05)',
     },
     friendName: {
-        color: '#fff',
-        fontSize: 15,
+        color: '#f0e6d2',
+        fontSize: 14,
         fontWeight: '600',
     },
     friendStatus: {
-        color: '#9ca3af',
+        color: '#888',
         fontSize: 12,
         marginTop: 2,
     },
     inviteAction: {
-        backgroundColor: '#4f46e5',
-        paddingHorizontal: 14,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderWidth: 1,
+        borderColor: GOLD,
     },
-    inviteActionContainer: {
-        minWidth: 110,
+    inviteActionDisabled: {
+        opacity: 0.5,
+        borderColor: '#6b7280',
     },
-    searchRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
+    inviteActionText: {
+        color: GOLD,
+        fontSize: 12,
+        fontWeight: '600',
+    },
+    invitedSection: {
+        paddingTop: 12,
+        paddingBottom: 16,
+        backgroundColor: 'rgba(0, 0, 0, 0.2)',
+        borderTopWidth: 1,
+        borderTopColor: 'rgba(199, 179, 123, 0.2)',
+    },
+    invitedHeader: {
+        color: GOLD,
+        fontSize: 16,
+        fontWeight: '700',
+        paddingHorizontal: 16,
         marginBottom: 8,
     },
-    searchInputWrapper: {
-        flex: 1,
+    invitedSeparator: {
+        height: 1,
+        backgroundColor: GOLD,
+        marginHorizontal: 16,
+        marginBottom: 8,
+        opacity: 0.3,
     },
-    searchInput: {
-        backgroundColor: '#0f0f0f',
-        borderWidth: 1,
-        borderColor: '#1f1f1f',
-        borderRadius: 8,
-        color: '#e5e7eb',
-        paddingHorizontal: 12,
-        paddingVertical: 10,
+    noInvitesText: {
+        color: '#6b7280',
+        fontSize: 14,
+        paddingHorizontal: 16,
+        paddingBottom: 16,
+        fontStyle: 'italic',
     },
-    filterButtons: {
-        flexDirection: 'row',
-        gap: 6,
-    },
-    filterButtonsCompact: {
-        flexDirection: 'row',
-        gap: 6,
-        alignItems: 'center',
-        justifyContent: 'flex-end',
-    },
-    filterButtonContainer: {
-        minWidth: 80,
-    },
-    inviteSummaryRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        marginBottom: 6,
-    },
-    inviteSummaryText: {
-        color: '#9ca3af',
+    inviteStatus: {
+        color: GOLD,
         fontSize: 12,
+        fontWeight: '600',
+        textTransform: 'uppercase',
     },
-    sectionSubtitle: {
-        color: '#a3a3a3',
-        fontSize: 13,
-        marginBottom: 10,
+    secondaryCta: {
+        alignItems: 'center',
+        paddingVertical: 12,
+    },
+    secondaryCtaText: {
+        color: GOLD,
+        fontSize: 14,
+        fontWeight: '600',
+        textTransform: 'uppercase',
+    },
+    leaveCta: {
+        alignItems: 'center',
+        paddingVertical: 12,
+    },
+    leaveCtaText: {
+        color: '#ef4444',
+        fontSize: 14,
+        fontWeight: '600',
+        textTransform: 'uppercase',
+    },
+    modalClose: {
+        color: '#f0e6d2',
+    },
+    modalHeaderTitleRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    refreshButton: {
+        padding: 4,
+    },
+    refreshIcon: {
+        color: GOLD,
+        fontSize: 18,
+        fontWeight: '700',
+    },
+    closeButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: GOLD,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    closeButtonText: {
+        color: GOLD,
+        fontSize: 18,
+        fontWeight: '400',
+        marginTop: -2,
+    },
+    addButton: {
+        width: 40,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    addButtonText: {
+        color: GOLD,
+        fontSize: 24,
+        fontWeight: '400',
+    },
+    tabRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 16,
+        marginTop: 8,
+    },
+    tabButton: {
+        paddingVertical: 8,
+        marginRight: 16,
+    },
+    tabButtonActive: {
+    },
+    tabText: {
+        color: '#6b7280',
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    tabTextActive: {
+        color: GOLD,
+    },
+    tabSeparator: {
+        width: 1,
+        height: 16,
+        backgroundColor: '#3c3c41',
+        marginRight: 16,
+    },
+    tabUnderline: {
+        height: 1,
+        backgroundColor: '#3c3c41',
+        marginHorizontal: 16,
+        marginBottom: 8,
     },
     invitationList: {
-        marginTop: 12,
-        borderTopWidth: 1,
-        borderTopColor: '#1f1f1f',
-        paddingTop: 10,
-        gap: 8,
+        maxHeight: 200,
     },
     invitationRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        backgroundColor: '#0f0f0f',
-        borderWidth: 1,
-        borderColor: '#1f1f1f',
-        borderRadius: 8,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
+        paddingVertical: 12,
+        paddingHorizontal: 16,
+        borderBottomWidth: 1,
+        borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+        backgroundColor: 'rgba(255, 255, 255, 0.02)',
     },
     invitationName: {
-        color: '#fff',
+        color: '#cfd5dd',
         fontSize: 14,
-        fontWeight: '600',
+        fontWeight: '500',
     },
-    inviteStatus: {
-        color: '#a3a3a3',
-        fontSize: 12,
-        fontWeight: '600',
-        textTransform: 'uppercase',
+    matchmakingDimOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(0, 0, 0, 0.85)',
+        zIndex: 10,
     },
-    modeButton: {
-        borderColor: '#4f46e5',
-        backgroundColor: 'transparent',
-    },
-    modeButtonActive: {
-        backgroundColor: '#4f46e5',
-    },
-    modeButtonTitle: {
-        color: '#e5e7eb',
-        fontSize: 12,
-    },
-    membersContainer: {
-        gap: 10,
-    },
-    memberRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: '#171717',
-        padding: 15,
-        borderRadius: 12,
-        marginBottom: 10,
-        borderWidth: 1,
-        borderColor: '#262626',
-    },
-    memberInfo: {
-        flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 15,
-    },
-    profileIconContainer: {
-        position: 'relative',
-    },
-    profileIcon: {
-        width: 50,
-        height: 50,
-        borderRadius: 25,
-    },
-    leaderBadge: {
+    matchmakingContainer: {
         position: 'absolute',
-        top: -5,
-        right: -5,
-        backgroundColor: '#eab308',
-        borderRadius: 10,
-        width: 20,
-        height: 20,
-        justifyContent: 'center',
-        alignItems: 'center',
-        borderWidth: 2,
-        borderColor: '#171717',
+        top: 0,
+        left: 0,
+        right: 0,
+        height: 250,
+        zIndex: 20,
+        borderBottomWidth: 1,
+        borderBottomColor: GOLD,
     },
-    leaderBadgeText: {
-        fontSize: 12,
-    },
-    memberTextContainer: {
+    matchmakingBg: {
         flex: 1,
     },
-    memberName: {
-        color: '#ffffff',
-        fontSize: 16,
-        fontWeight: '600',
+    matchmakingBgImage: {
+        resizeMode: 'cover',
     },
-    memberChipsRow: {
+    matchmakingContent: {
+        flex: 1,
+        paddingTop: 60, // Safe area padding
+        paddingHorizontal: 20,
+        paddingBottom: 20,
+        backgroundColor: 'rgba(0,0,0,0.3)', // Slight tint on the image itself
+    },
+    matchmakingTopRow: {
         flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        marginTop: 2,
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        marginBottom: 4,
     },
-    leaderChip: {
-        backgroundColor: '#fbbf24',
-        color: '#0f172a',
-        fontSize: 10,
-        fontWeight: '700',
-        paddingHorizontal: 6,
-        paddingVertical: 2,
-        borderRadius: 8,
+    matchmakingTitle: {
+        fontSize: 20,
+        fontWeight: '800',
+        color: '#fff',
+        letterSpacing: 1,
+        fontFamily: 'serif',
         textTransform: 'uppercase',
     },
-    localPlayerTag: {
-        color: '#4f46e5',
-        fontSize: 12,
-        fontWeight: '500',
-        marginTop: 2,
-    },
-    skeletonName: {
-        width: 120,
-        height: 14,
-        borderRadius: 6,
-        backgroundColor: '#1f2937',
-    },
-    memberSubtext: {
-        color: '#737373',
-        fontSize: 12,
-        marginTop: 2,
-    },
-    actionsRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-    },
-    memberActions: {
-        flexDirection: 'row',
-        gap: 6,
-    },
-    smallOutline: {
-        borderColor: '#4f46e5',
-    },
-    smallDanger: {
-        borderColor: '#ef4444',
-    },
-    actionTitle: {
-        color: '#e5e7eb',
-        fontSize: 12,
-    },
-    actionContainer: {
-        paddingHorizontal: 0,
-    },
-    estimatedTimeText: {
-        color: '#eab308',
-        fontSize: 14,
-        fontWeight: '500',
-        marginTop: 8,
-        textAlign: 'center',
-    },
-    headerStatusRow: {
-        flexDirection: 'row',
-        gap: 12,
-        marginTop: 6,
-    },
-    headerStatusText: {
-        color: '#9ca3af',
-        fontSize: 12,
-    },
-    loadingContainer: {
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: 40,
-    },
-    loadingText: {
-        color: '#a3a3a3',
+    matchmakingSubtitle: {
         fontSize: 16,
-    },
-    emptyStateContainer: {
-        padding: 40,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    emptyStateText: {
-        color: '#ffffff',
-        fontSize: 18,
-        fontWeight: '600',
-        marginBottom: 8,
-        textAlign: 'center',
-    },
-    emptyStateSubtext: {
-        color: '#737373',
-        fontSize: 14,
-        textAlign: 'center',
-    },
-    roleContainer: {
-        flexDirection: 'row',
-        gap: 5,
-    },
-    roleButton: {
-        backgroundColor: '#333',
-        padding: 8,
-        borderRadius: 5,
-        minWidth: 50,
-        alignItems: 'center',
-        borderWidth: 1,
-        borderColor: '#444',
-    },
-    roleText: {
-        color: '#fff',
-        fontSize: 12,
-        fontWeight: 'bold',
-    },
-    footer: {
-        gap: 10,
-        marginTop: 20,
+        color: '#e0e0e0',
         marginBottom: 20,
     },
-    buttonContainer: {
+    matchmakingCloseButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: GOLD,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(0,0,0,0.5)',
+    },
+    matchmakingCloseIcon: {
+        color: GOLD,
+        fontSize: 20,
+        marginTop: -2,
+    },
+    matchmakingTimerContainer: {
+        marginTop: 10,
+    },
+    matchmakingTimer: {
+        fontSize: 48,
+        fontWeight: '700',
+        color: '#fff',
+        fontVariant: ['tabular-nums'],
+        marginBottom: 4,
+    },
+    matchmakingEstimated: {
+        fontSize: 16,
+        color: '#ccc',
+        fontWeight: '500',
+    },
+    readyCheckContainer: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 30,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 20,
+    },
+    readyCheckTitle: {
+        fontSize: 36,
+        fontWeight: '800',
+        color: '#f0e6d2',
+        letterSpacing: 2,
+        fontFamily: 'serif',
+        textTransform: 'uppercase',
+        marginBottom: 8,
+        textShadowColor: 'rgba(0,0,0,0.75)',
+        textShadowOffset: { width: 0, height: 2 },
+        textShadowRadius: 4,
+    },
+    readyCheckSubtitle: {
+        fontSize: 18,
+        color: '#cfd5dd',
+        marginBottom: 24,
+    },
+    readyCheckProgressContainer: {
         width: '100%',
-        marginBottom: 6,
+        height: 6,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        marginBottom: 32,
+        borderRadius: 3,
+        overflow: 'hidden',
     },
-    queueButton: {
-        backgroundColor: '#4f46e5',
-        paddingVertical: 15,
-        borderRadius: 12,
+    readyCheckProgressBar: {
+        height: '100%',
+        borderRadius: 3,
     },
-    leaveButton: {
-        borderColor: '#ef4444',
+    acceptButton: {
+        width: '100%',
+        backgroundColor: '#1e2328',
+        borderWidth: 2,
+        borderColor: GOLD,
+        paddingVertical: 16,
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    acceptButtonText: {
+        color: GOLD,
+        fontSize: 18,
+        fontWeight: '700',
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+    },
+    declineButton: {
+        width: '60%',
         backgroundColor: 'transparent',
         borderWidth: 1,
-        paddingVertical: 15,
-        borderRadius: 12,
+        borderColor: '#0acbe6',
+        paddingVertical: 12,
+        alignItems: 'center',
     },
-    secondaryButton: {
-        borderColor: '#4f46e5',
-        paddingVertical: 15,
-        borderRadius: 12,
+    declineButtonText: {
+        color: '#f0e6d2',
+        fontSize: 14,
+        fontWeight: '700',
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+    },
+    penaltyBanner: {
+        backgroundColor: 'rgba(239, 68, 68, 0.2)',
+        borderWidth: 1,
+        borderColor: '#ef4444',
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+        marginBottom: 12,
+        borderRadius: 4,
+        alignItems: 'center',
+        width: '100%',
+    },
+    penaltyTitle: {
+        color: '#ef4444',
+        fontSize: 12,
+        fontWeight: '800',
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+        marginBottom: 4,
+    },
+    penaltyText: {
+        color: '#ef4444',
+        fontSize: 14,
+        fontWeight: '700',
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+    },
+    positionSelectorContainer: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        gap: 20,
+        marginBottom: 20,
+    },
+    positionButton: {
+        alignItems: 'center',
+    },
+    positionLabel: {
+        color: '#9ca3af',
+        fontSize: 12,
+        marginBottom: 8,
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+    },
+    positionIconContainer: {
+        width: 60,
+        height: 60,
+        borderRadius: 30,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        borderWidth: 1,
+        borderColor: '#fbbf24',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    positionIconImage: {
+        width: 40,
+        height: 40,
+        resizeMode: 'contain',
     },
 });

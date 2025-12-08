@@ -19,6 +19,11 @@ export function useInviteListener() {
     const [isConnected, setIsConnected] = useState(false);
     const lcuBridge = getLCUBridge();
     const processedInvites = useRef<Set<string>>(new Set());
+    const activeInviteRef = useRef<Invite | null>(null);
+
+    useEffect(() => {
+        activeInviteRef.current = activeInvite;
+    }, [activeInvite]);
 
     useEffect(() => {
         const onConnectionChange = (connected: boolean) => {
@@ -35,6 +40,8 @@ export function useInviteListener() {
 
     useEffect(() => {
         if (!isConnected) return;
+        let cancelled = false;
+        let pollInterval: NodeJS.Timeout | null = null;
 
         const fetchInviteDetails = async (invite: any) => {
             try {
@@ -76,36 +83,52 @@ export function useInviteListener() {
             }
         };
 
-        const handleInvites = async (result: any) => {
-            if (result.status !== 200 || !Array.isArray(result.content)) return;
-
-            const invites = result.content;
-            // Find the first Pending invite that we haven't processed or is currently active
+        const handleInvites = async (invites: any[]) => {
             const pendingInvite = invites.find((i: any) => i.state === 'Pending');
 
             if (pendingInvite) {
-                // If it's a new invite we haven't seen as active yet
-                if (activeInvite?.invitationId !== pendingInvite.invitationId) {
+                // Show immediately to avoid blocking on extra fetches
+                if (activeInviteRef.current?.invitationId !== pendingInvite.invitationId) {
                     console.log('[useInviteListener] Found new pending invite:', pendingInvite.invitationId);
-                    const enhancedInvite = await fetchInviteDetails(pendingInvite);
-                    setActiveInvite(enhancedInvite);
+                    setActiveInvite(pendingInvite);
+                    fetchInviteDetails(pendingInvite).then((enhanced) => {
+                        if (!cancelled && enhanced?.invitationId === pendingInvite.invitationId) {
+                            setActiveInvite(enhanced);
+                        }
+                    });
                 }
-            } else {
-                // No pending invites
-                if (activeInvite) {
-                    setActiveInvite(null);
-                }
+            } else if (activeInviteRef.current) {
+                setActiveInvite(null);
             }
         };
 
-        // Subscribe to received invitations
-        lcuBridge.request('/lol-lobby/v2/received-invitations').then(handleInvites).catch(console.error);
-        const unsubscribe = lcuBridge.observe('/lol-lobby/v2/received-invitations', handleInvites);
+        const onObserve = (result: any) => {
+            if (result.status !== 200 || !Array.isArray(result.content)) return;
+            handleInvites(result.content);
+        };
+
+        const pollOnce = async () => {
+            try {
+                const res = await lcuBridge.request('/lol-lobby/v2/received-invitations');
+                if (res.status === 200 && Array.isArray(res.content)) {
+                    handleInvites(res.content);
+                }
+            } catch (e) {
+                console.warn('[useInviteListener] Poll error', e);
+            }
+        };
+
+        // Initial fetch and subscribe
+        pollOnce();
+        const unsubscribe = lcuBridge.observe('/lol-lobby/v2/received-invitations', onObserve);
+        pollInterval = setInterval(pollOnce, 1000); // fast polling fallback for reliability
 
         return () => {
+            cancelled = true;
+            if (pollInterval) clearInterval(pollInterval);
             unsubscribe();
         };
-    }, [activeInvite, isConnected]);
+    }, [isConnected]);
 
     const acceptInvite = async (invitationId: string) => {
         try {

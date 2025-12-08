@@ -2,14 +2,24 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
 import { Overlay } from '@rneui/themed';
 
-// Role icons (using text for now, can be replaced with images)
-const ROLES = [
-    { id: 'TOP', name: 'Top', icon: '🛡️' },
-    { id: 'JUNGLE', name: 'Jungle', icon: '🌲' },
-    { id: 'MIDDLE', name: 'Mid', icon: '⚔️' },
-    { id: 'BOTTOM', name: 'Bot', icon: '🏹' },
-    { id: 'UTILITY', name: 'Support', icon: '❤️' },
-    { id: 'FILL', name: 'Fill', icon: '🔄' },
+// Role icons
+const ROLE_ICONS = {
+    TOP: require('../../static/roles/role-top.png'),
+    JUNGLE: require('../../static/roles/role-jungle.png'),
+    MIDDLE: require('../../static/roles/role-mid.png'),
+    BOTTOM: require('../../static/roles/role-bot.png'),
+    UTILITY: require('../../static/roles/role-support.png'),
+    FILL: require('../../static/roles/role-fill.png'),
+    UNSELECTED: require('../../static/roles/role-unselected.png'),
+};
+
+export const ROLES = [
+    { id: 'TOP', name: 'Top', icon: ROLE_ICONS.TOP },
+    { id: 'JUNGLE', name: 'Jungle', icon: ROLE_ICONS.JUNGLE },
+    { id: 'MIDDLE', name: 'Mid', icon: ROLE_ICONS.MIDDLE },
+    { id: 'BOTTOM', name: 'Bot', icon: ROLE_ICONS.BOTTOM },
+    { id: 'UTILITY', name: 'Support', icon: ROLE_ICONS.UTILITY },
+    { id: 'FILL', name: 'Fill', icon: ROLE_ICONS.FILL },
 ];
 
 interface RolePickerProps {
@@ -34,7 +44,7 @@ export default function RolePicker({ visible, onSelect, onClose, currentRole }: 
                             ]}
                             onPress={() => onSelect(role.id)}
                         >
-                            <Text style={styles.roleIcon}>{role.icon}</Text>
+                            <Image source={role.icon} style={styles.roleIconImage} />
                             <Text style={styles.roleName}>{role.name}</Text>
                         </TouchableOpacity>
                     ))}
@@ -80,9 +90,11 @@ const styles = StyleSheet.create({
         borderColor: '#d4af37', // Gold color
         backgroundColor: '#3a3a3a',
     },
-    roleIcon: {
-        fontSize: 30,
+    roleIconImage: {
+        width: 40,
+        height: 40,
         marginBottom: 5,
+        resizeMode: 'contain',
     },
     roleName: {
         color: '#ccc',

@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, ActivityIndicator, Switch } from 'react-native';
+import { Audio } from 'expo-av';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '@rneui/themed';
 import { supabase } from '../lib/supabase';
 import { Session } from '@supabase/supabase-js';
-import CreateLobby from '../components/CreateLobby';
+import CreateLobbyScreen from './CreateLobbyScreen';
 import { getLCUBridge, checkDesktopOnline, type DesktopStatus } from '../lib/lcuBridge';
 import { RIFT_URL, RIFT_HTTP_URL } from '../config';
 import { RiftSocketState, type RiftSocketStateValue } from '../lib/riftSocket';
@@ -69,6 +70,7 @@ export default function HomeScreen({ session }: { session: Session }) {
     const [checkingStatus, setCheckingStatus] = useState(true);
     const [serverReachable, setServerReachable] = useState(true);
     const statusCheckInterval = useRef<NodeJS.Timeout | null>(null);
+    const statusRefreshInterval = useRef<NodeJS.Timeout | null>(null);
     const autoAcceptRef = useRef(autoAccept);
     const queueTimerRef = useRef<NodeJS.Timeout | null>(null);
     const queueStartRef = useRef<number | null>(null);
@@ -99,6 +101,46 @@ export default function HomeScreen({ session }: { session: Session }) {
         if (gamePhaseRef.current === phase) return;
         gamePhaseRef.current = phase;
         setGamePhase(phase);
+
+        // Play sound when match is found
+        if (phase === 'ReadyCheck') {
+            const playSound = async () => {
+                try {
+                    // Configure audio mode to ensure playback
+                    await Audio.setAudioModeAsync({
+                        playsInSilentModeIOS: true,
+                        staysActiveInBackground: true,
+                        shouldDuckAndroid: true,
+                    });
+
+                    const { sound } = await Audio.Sound.createAsync(
+                        require('../../static/queue-pop.mp3'),
+                        { shouldPlay: true }
+                    );
+
+                    // Unload sound after playback finishes
+                    sound.setOnPlaybackStatusUpdate(async (status) => {
+                        if (status.isLoaded && status.didJustFinish) {
+                            await sound.unloadAsync();
+                        }
+                    });
+                } catch (error) {
+                    console.warn('[HomeScreen] Failed to play queue-pop sound', error);
+                }
+            };
+            playSound();
+        }
+
+        // Reset queue timer if we leave matchmaking/queue
+        if (phase !== 'Matchmaking' && phase !== 'Queue' && phase !== 'ReadyCheck') {
+            if (queueTimerRef.current) {
+                clearInterval(queueTimerRef.current);
+                queueTimerRef.current = null;
+            }
+            queueStartRef.current = null;
+            setTimeInQueue(0);
+            setEstimatedQueueTime(null);
+        }
     }, []);
 
     const clearGamePhase = useCallback(() => {
@@ -243,6 +285,20 @@ export default function HomeScreen({ session }: { session: Session }) {
         }
     }, [clearGamePhase, clearLobbyState, connected, desktopStatus.lcuConnected]);
 
+    // Local countdown for queue penalty
+    useEffect(() => {
+        if (queuePenaltySeconds <= 0) return;
+
+        const interval = setInterval(() => {
+            setQueuePenaltySeconds(prev => {
+                if (prev <= 1) return 0;
+                return prev - 1;
+            });
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, [queuePenaltySeconds > 0]); // Only re-run when penalty state changes from 0 to >0 or vice versa
+
     // If LCU disconnects while app is connected, drop back to home and close create lobby
     useEffect(() => {
         if (connected && !desktopStatus.lcuConnected) {
@@ -356,6 +412,55 @@ export default function HomeScreen({ session }: { session: Session }) {
             }
         };
     }, [connected, checkStatus]);
+
+    // Auto-connect when desktop is detected online so user doesn't need to tap the button
+    useEffect(() => {
+        if (connected) return;
+        if (loading) return;
+        if (!isDesktopOnline) return;
+        if (!session?.user?.id) return;
+        if (connectionState === RiftSocketState.CONNECTING) return;
+        handleConnect();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [connected, loading, isDesktopOnline, session?.user?.id, connectionState]);
+
+    // While connected to desktop, poll for LCU readiness so UI flips once the client opens
+    useEffect(() => {
+        if (!connected) {
+            if (statusRefreshInterval.current) {
+                clearInterval(statusRefreshInterval.current);
+                statusRefreshInterval.current = null;
+            }
+            return;
+        }
+
+        // Always request an updated status when connection state changes
+        lcuBridge.requestStatus();
+
+        if (desktopStatus.lcuConnected) {
+            if (statusRefreshInterval.current) {
+                clearInterval(statusRefreshInterval.current);
+                statusRefreshInterval.current = null;
+            }
+            return;
+        }
+
+        if (statusRefreshInterval.current) {
+            clearInterval(statusRefreshInterval.current);
+            statusRefreshInterval.current = null;
+        }
+
+        statusRefreshInterval.current = setInterval(() => {
+            lcuBridge.requestStatus();
+        }, 2000);
+
+        return () => {
+            if (statusRefreshInterval.current) {
+                clearInterval(statusRefreshInterval.current);
+                statusRefreshInterval.current = null;
+            }
+        };
+    }, [connected, desktopStatus.lcuConnected, lcuBridge]);
 
     // Fallback gameflow poll to stay in sync with desktop transitions
     useEffect(() => {
@@ -544,16 +649,42 @@ export default function HomeScreen({ session }: { session: Session }) {
             }
         });
 
+        // Observe simple gameflow phase string for faster updates
+        const unsubscribePhase = lcuBridge.observe('/lol-gameflow/v1/gameflow-phase', (result) => {
+            if (result.status === 200 && typeof result.content === 'string') {
+                const phase = result.content;
+                updateGamePhase(phase);
+
+                // Force fetch lobby if we are in Lobby phase, to ensure we catch external lobby changes
+                // even if the phase didn't technically change (e.g. Lobby -> Lobby transition)
+                if (phase === 'Lobby') {
+                    lcuBridge.request('/lol-lobby/v2/lobby').then(res => {
+                        if (res.status === 200 && res.content) {
+                            applyLobbyUpdate(res.content);
+                        }
+                    }).catch(() => { });
+                }
+            }
+        });
+
         // Fallback periodic sync while connected to keep gamePhase fresh
         phaseRefresher = setInterval(async () => {
             try {
                 const res = await lcuBridge.request('/lol-gameflow/v1/session');
                 if (res.status === 200 && res.content?.phase) {
-                    updateGamePhase(res.content.phase);
-                    if (res.content.phase === 'ChampSelect') {
+                    const phase = res.content.phase;
+                    updateGamePhase(phase);
+
+                    if (phase === 'ChampSelect') {
                         const cs = await lcuBridge.request('/lol-champ-select/v1/session');
                         if (cs.status === 200 && cs.content) {
                             applyChampSelectUpdate(cs.content);
+                        }
+                    } else if (phase === 'Lobby') {
+                        // Force sync lobby data periodically to catch external changes
+                        const lobbyRes = await lcuBridge.request('/lol-lobby/v2/lobby');
+                        if (lobbyRes.status === 200 && lobbyRes.content) {
+                            applyLobbyUpdate(lobbyRes.content);
                         }
                     }
                 }
@@ -566,6 +697,7 @@ export default function HomeScreen({ session }: { session: Session }) {
             if (nonePhaseTimeout) clearTimeout(nonePhaseTimeout);
             if (phaseRefresher) clearInterval(phaseRefresher);
             unsubscribe();
+            unsubscribePhase();
         };
     }, [applyChampSelectUpdate, clearGamePhase, connected, lcuBridge, updateGamePhase]);
 
@@ -713,7 +845,14 @@ export default function HomeScreen({ session }: { session: Session }) {
                     setQueuePenaltySeconds(extractQueuePenalty(result.content));
                     return;
                 }
-                setQueuePenaltySeconds(extractQueuePenalty(result.content));
+                const penalty = extractQueuePenalty(result.content);
+                if (penalty > 0) {
+                    setQueuePenaltySeconds(penalty);
+                } else if (result.content.isCurrentlyInQueue) {
+                    // If we are in queue and no penalty reported, then we are good.
+                    setQueuePenaltySeconds(0);
+                }
+
                 // Explicitly not in queue; avoid clearing instantly if we just saw a queue state (debounce transient drops)
                 const now = Date.now();
                 if (lastQueueSeenRef.current && now - lastQueueSeenRef.current < 4000) {
@@ -722,13 +861,18 @@ export default function HomeScreen({ session }: { session: Session }) {
                 stopQueueTimer();
                 setTimeInQueue(0);
                 setEstimatedQueueTime(null);
-                setQueuePenaltySeconds(0);
+
+                // Only clear penalty if we didn't just find one
+                if (penalty === 0 && result.content.isCurrentlyInQueue) {
+                    setQueuePenaltySeconds(0);
+                }
             } else if (result.status === 404) {
                 // 404 indicates no search; clear values
                 stopQueueTimer();
                 setTimeInQueue(0);
                 setEstimatedQueueTime(null);
-                setQueuePenaltySeconds(0);
+                // Do NOT clear queuePenaltySeconds on 404; let local countdown handle it
+                // or wait for next explicit penalty update.
             } // Ignore transient errors to avoid flicker
         });
 
@@ -1098,6 +1242,85 @@ export default function HomeScreen({ session }: { session: Session }) {
         }
     };
 
+    const handleBanChampion = async (championId: number) => {
+        if (!ensureConnected()) return;
+
+        try {
+            let session = champSelect;
+            if (!session) {
+                const res = await lcuBridge.request('/lol-champ-select/v1/session');
+                if (res.status === 200 && res.content) {
+                    setChampSelect(res.content);
+                    session = res.content;
+                }
+            }
+            if (!session) {
+                showAlert('Error', 'No champ select session available', undefined, 'error');
+                return;
+            }
+
+            const localPlayerCellId = session.localPlayerCellId;
+            const myTeam = session.myTeam || [];
+            const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
+
+            if (!localPlayer) {
+                showAlert('Error', 'Could not find local player', undefined, 'error');
+                return;
+            }
+
+            const findActiveBan = (s: any) => {
+                const acts = s?.actions || [];
+                for (const turn of acts) {
+                    for (const action of turn) {
+                        if (
+                            action.actorCellId === localPlayerCellId &&
+                            !action.completed &&
+                            action.isInProgress &&
+                            (action.type || '').toLowerCase() === 'ban' &&
+                            typeof action.id === 'number' &&
+                            action.id >= 0
+                        ) {
+                            return action;
+                        }
+                    }
+                }
+                return null;
+            };
+
+            let current = findActiveBan(session);
+
+            if (!current) {
+                const refreshed = await lcuBridge.request('/lol-champ-select/v1/session');
+                if (refreshed.status === 200 && refreshed.content) {
+                    setChampSelect(refreshed.content);
+                    session = refreshed.content;
+                    current = findActiveBan(session);
+                }
+            }
+
+            if (!current) {
+                showAlert('Error', 'No active ban turn right now', undefined, 'error');
+                return;
+            }
+
+            await lcuBridge.request(
+                `/lol-champ-select/v1/session/actions/${current.id}`,
+                'PATCH',
+                { championId, completed: true }
+            );
+
+            // Refresh session to reflect updated bans immediately
+            try {
+                const refreshedSession = await lcuBridge.request('/lol-champ-select/v1/session');
+                if (refreshedSession.status === 200 && refreshedSession.content) {
+                    setChampSelect(refreshedSession.content);
+                }
+            } catch { /* ignore */ }
+        } catch (error: any) {
+            showAlert('Error', error.message || 'Failed to ban champion', undefined, 'error');
+        }
+    };
+
     const handleUpdateRoles = async (first: string, second: string) => {
         if (!ensureConnected()) return;
         try {
@@ -1119,7 +1342,37 @@ export default function HomeScreen({ session }: { session: Session }) {
     };
 
     // Render appropriate screen based on game phase
+    // Render appropriate screen based on game phase
+    const handleCreateLobbySuccess = async () => {
+        setShowCreateLobby(false);
+        try {
+            // 1. Refresh gameflow phase
+            const phaseResult = await lcuBridge.request('/lol-gameflow/v1/session');
+            if (phaseResult.status === 200 && phaseResult.content?.phase) {
+                updateGamePhase(phaseResult.content.phase);
+            }
+
+            // 2. Explicitly fetch lobby data to ensure UI updates immediately
+            const lobbyResult = await lcuBridge.request('/lol-lobby/v2/lobby');
+            if (lobbyResult.status === 200 && lobbyResult.content) {
+                applyLobbyUpdate(lobbyResult.content);
+            }
+        } catch (e) {
+            console.log('Failed to refresh phase/lobby after creation', e);
+        }
+    };
+
     const renderContent = () => {
+        if (showCreateLobby) {
+            return (
+                <CreateLobbyScreen
+                    onClose={() => setShowCreateLobby(false)}
+                    onSuccess={handleCreateLobbySuccess}
+                    onError={(message) => showAlert('Error', message, undefined, 'error')}
+                />
+            );
+        }
+
         if (!connected) {
             return (
                 <View style={styles.container}>
@@ -1172,14 +1425,38 @@ export default function HomeScreen({ session }: { session: Session }) {
                 <ChampSelectScreen
                     champSelect={champSelect}
                     onPick={handlePickChampion}
-                    onBan={() => { }} // TODO: Implement ban
+                    onBan={handleBanChampion}
                     onError={(message) => showAlert('Error', message, undefined, 'error')}
                     onSuccess={undefined}
                 />
             );
         }
 
-        if (gamePhase === 'Matchmaking' || gamePhase === 'Queue' || gamePhase === 'ReadyCheck') {
+        if (gamePhase === 'Matchmaking' || gamePhase === 'ReadyCheck') {
+            return (
+                <LobbyScreen
+                    lobby={lobby}
+                    onEnterQueue={handleEnterQueue}
+                    onLeaveLobby={handleLeaveLobby}
+                    onUpdateRoles={handleUpdateRoles}
+                    onOpenCreateLobby={() => setShowCreateLobby(true)}
+                    estimatedQueueTime={estimatedQueueTime}
+                    favoriteConfig={favoriteConfig}
+                    onSaveFavoriteConfig={persistFavoriteConfig}
+                    favoritesLoaded={favoritesLoaded}
+                    onError={(message) => showAlert('Error', message, undefined, 'error')}
+                    gamePhase={gamePhase}
+                    timeInQueue={timeInQueue}
+                    onCancelQueue={handleCancelQueue}
+                    readyCheck={readyCheck}
+                    onAcceptMatch={handleAcceptReadyCheck}
+                    onDeclineMatch={handleDeclineReadyCheck}
+                    queuePenaltySeconds={queuePenaltySeconds}
+                />
+            );
+        }
+
+        if (gamePhase === 'Queue') {
             return (
                 <QueueScreen
                     onCancelQueue={handleCancelQueue}
@@ -1197,7 +1474,7 @@ export default function HomeScreen({ session }: { session: Session }) {
 
         if (gamePhase === 'Lobby') {
             const handleSwitchLobbyMode = () => {
-                setShowCreateLobby(true); // do not leave; switching modes should keep members
+                setShowCreateLobby(true);
             };
             return (
                 <LobbyScreen
@@ -1212,6 +1489,7 @@ export default function HomeScreen({ session }: { session: Session }) {
                     favoritesLoaded={favoritesLoaded}
                     onError={(message) => showAlert('Error', message, undefined, 'error')}
                     onSuccess={undefined}
+                    queuePenaltySeconds={queuePenaltySeconds}
                 />
             );
         }
@@ -1232,24 +1510,6 @@ export default function HomeScreen({ session }: { session: Session }) {
             <View style={styles.container}>
 
                 {renderContent()}
-
-                <CreateLobby
-                    visible={showCreateLobby}
-                    onClose={() => setShowCreateLobby(false)}
-                    onSuccess={async () => {
-                        setShowCreateLobby(false);
-                        // Force update game phase
-                        try {
-                            const result = await lcuBridge.request('/lol-gameflow/v1/session');
-                            if (result.status === 200 && result.content && result.content.phase) {
-                                updateGamePhase(result.content.phase);
-                            }
-                        } catch (e) {
-                            console.log('Failed to force update phase', e);
-                        }
-                    }}
-                    onError={undefined}
-                />
 
                 <CustomModal
                     visible={modalVisible}

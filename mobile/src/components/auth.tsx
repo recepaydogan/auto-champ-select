@@ -42,7 +42,11 @@ export default function Auth() {
         })
 
         if (error) {
-            showModal('Login Failed', error.message, 'error')
+            let msg = error.message;
+            if (msg.includes('JSON Parse error') || msg.includes('Unexpected character')) {
+                msg = 'Unable to connect to the server (500). Your Supabase project might be paused or experiencing issues.';
+            }
+            showModal('Login Failed', msg, 'error')
         }
         setLoading(false)
     }
@@ -71,7 +75,7 @@ export default function Auth() {
     }
 
     return (
-        <ScrollView 
+        <ScrollView
             contentContainerStyle={styles.scrollContainer}
             style={styles.container}
             keyboardShouldPersistTaps="handled"
