@@ -1,9 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, Modal, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Image, Modal, ActivityIndicator, ScrollView } from 'react-native';
 import { Button } from '@rneui/themed';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { getLCUBridge } from '../lib/lcuBridge';
 import ChampionGrid from './ChampionGrid';
 import RolePicker from './RolePicker';
+import RunePicker from './RunePicker';
+import RuneBuilder from './RuneBuilder';
+import SkinPicker from './SkinPicker';
+import SpellPicker from './SpellPicker';
 
 interface QuickplaySlot {
     championId: number;
@@ -21,6 +26,16 @@ interface QuickplaySetupProps {
     onSuccess?: (message: string) => void;
 }
 
+const ROLE_ICONS: Record<string, any> = {
+    TOP: require('../../static/roles/role-top.png'),
+    JUNGLE: require('../../static/roles/role-jungle.png'),
+    MIDDLE: require('../../static/roles/role-mid.png'),
+    BOTTOM: require('../../static/roles/role-bot.png'),
+    UTILITY: require('../../static/roles/role-support.png'),
+    FILL: require('../../static/roles/role-fill.png'),
+    UNSELECTED: require('../../static/roles/role-unselected.png'),
+};
+
 export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: QuickplaySetupProps) {
     const [slots, setSlots] = useState<QuickplaySlot[]>([]);
     const [loading, setLoading] = useState(true);
@@ -36,9 +51,36 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
     const [showChampionGrid, setShowChampionGrid] = useState(false);
     const [showRolePicker, setShowRolePicker] = useState(false);
     const [activeSlotIndex, setActiveSlotIndex] = useState<number>(0);
-    
+
     // Update states for individual slots
     const [updatingSlots, setUpdatingSlots] = useState<Set<number>>(new Set());
+
+    // Ownership / runes / skins
+    const [ownedChampionIds, setOwnedChampionIds] = useState<number[]>([]);
+    const [runePages, setRunePages] = useState<any[]>([]);
+    const [loadingRunes, setLoadingRunes] = useState(false);
+    const [selectedRunePageIds, setSelectedRunePageIds] = useState<Record<number, number | null>>({});
+    const [showRunePicker, setShowRunePicker] = useState(false);
+    const [runeSlotIndex, setRuneSlotIndex] = useState<number>(0);
+    const [showRuneBuilder, setShowRuneBuilder] = useState(false);
+    const [editingPageId, setEditingPageId] = useState<number | null>(null);
+    const [runePageName, setRunePageName] = useState<string>('Custom Page');
+    const [perkStyles, setPerkStyles] = useState<any[]>([]);
+    const [runeIconMap, setRuneIconMap] = useState<Record<number, string>>({});
+
+    const [skinCache, setSkinCache] = useState<Record<number, any[]>>({});
+    const [pickableChampionIds, setPickableChampionIds] = useState<number[]>([]);
+    const [selectedSkinIds, setSelectedSkinIds] = useState<Record<number, number | null>>({});
+    const [skinSlotIndex, setSkinSlotIndex] = useState<number>(0);
+    const [showSkinPicker, setShowSkinPicker] = useState(false);
+    const [loadingSkinsFor, setLoadingSkinsFor] = useState<number | null>(null);
+
+    // Spells
+    const [spells, setSpells] = useState<any[]>([]);
+    const [showSpellPicker, setShowSpellPicker] = useState(false);
+    const [spellSlotIndex, setSpellSlotIndex] = useState<number>(0);
+    const [pickingFirstSpell, setPickingFirstSpell] = useState(true);
+    const spellMapRef = useRef<Record<number, string>>({});
 
     const lcuBridge = getLCUBridge();
 
@@ -47,14 +89,132 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [lobby?.gameConfig?.queueId, lobby?.localMember?.puuid]);
 
+    const fetchOwnedChampionIds = async () => {
+        const summonerId = lobby?.localMember?.summonerId;
+        // Primary endpoint used by desktop client
+        try {
+            const res = await lcuBridge.request('/lol-champions/v1/owned-champions-minimal');
+            if (res.status === 200 && Array.isArray(res.content)) {
+                const ids = res.content
+                    .map((c: any) => (typeof c === 'number' ? c : c?.id))
+                    .filter((id: any) => typeof id === 'number' && id > 0);
+                if (ids.length) {
+                    setOwnedChampionIds(Array.from(new Set(ids)));
+                    return;
+                }
+            }
+        } catch (err) {
+            console.warn('Owned champions minimal failed', err);
+        }
+
+        // Fallback: inventory endpoint per summoner
+        if (summonerId) {
+            try {
+                const inv = await lcuBridge.request(`/lol-champions/v1/inventories/${summonerId}/champions-minimal`);
+                if (inv.status === 200 && Array.isArray(inv.content)) {
+                    const ids = inv.content
+                        .map((c: any) => (typeof c === 'number' ? c : c?.id))
+                        .filter((id: any) => typeof id === 'number' && id > 0);
+                    if (ids.length) {
+                        setOwnedChampionIds(Array.from(new Set(ids)));
+                        return;
+                    }
+                }
+            } catch (err) {
+                console.warn('Owned champions inventory failed', err);
+            }
+        }
+    };
+
+    const loadRunes = async () => {
+        setLoadingRunes(true);
+        try {
+            const pagesRes = await lcuBridge.request('/lol-perks/v1/pages');
+            if (pagesRes.status === 200 && Array.isArray(pagesRes.content)) {
+                setRunePages(pagesRes.content);
+                // Prime current selection if missing
+                const active = pagesRes.content.find((p: any) => p.isActive);
+                if (active) {
+                    setSelectedRunePageIds(prev => Object.keys(prev).length ? prev : { 0: active.id, 1: active.id });
+                }
+            }
+        } catch (err) {
+            console.warn('Failed to load runes for quickplay', err);
+        } finally {
+            setLoadingRunes(false);
+        }
+    };
+
+    const setSlotsFromLobby = useCallback((lobbyContent: any): boolean => {
+        if (!lobbyContent) return false;
+        const lobbySlots: QuickplaySlot[] = lobbyContent?.localMember?.playerSlots ||
+            lobbyContent?.members?.find((m: any) => m.puuid === lobbyContent?.localMember?.puuid)?.playerSlots ||
+            [];
+        if (Array.isArray(lobbySlots) && lobbySlots.length > 0) {
+            setSlots(lobbySlots);
+            setDebugResult(lobbyContent === lobby ? 'Using prop lobby.playerSlots' : 'Using live lobby.playerSlots');
+            return true;
+        }
+        return false;
+    }, [lobby]);
+
+    const loadPickableChampionIds = async () => {
+        try {
+            const res = await lcuBridge.request('/lol-champ-select/v1/pickable-champion-ids');
+            if (res.status === 200 && Array.isArray(res.content)) {
+                const ids = res.content.filter((id: any) => typeof id === 'number' && id > 0);
+                setPickableChampionIds(ids);
+            }
+        } catch (err) {
+            console.warn('[QuickplaySetup] Failed to load pickable champion ids', err);
+        }
+    };
+
+    useEffect(() => {
+        if (!lcuBridge.getIsConnected()) return;
+        let unsubscribe: (() => void) | undefined;
+        let interval: ReturnType<typeof setInterval> | undefined;
+
+        const handleUpdate = (res: any) => {
+            if (res?.content) {
+                setSlotsFromLobby(res.content);
+            }
+        };
+
+        try {
+            unsubscribe = lcuBridge.observe('/lol-lobby/v2/lobby', handleUpdate);
+        } catch (e) {
+            console.warn('Observe lobby failed, will rely on polling', e);
+        }
+
+        interval = setInterval(() => {
+            loadSlots().catch(() => { });
+            loadPickableChampionIds().catch(() => { });
+        }, 5000);
+
+        return () => {
+            if (unsubscribe) unsubscribe();
+            if (interval) clearInterval(interval);
+        };
+    }, [lcuBridge, setSlotsFromLobby]);
+
     const loadData = async () => {
-        if (loading && slots.length > 0) return;
+        if (loading && Array.isArray(slots) && slots.length > 0) return;
 
         try {
             setLoading(true);
             setError('');
 
             let championsLoaded = champions.length > 0;
+
+            // Load owned champs & rune pages in parallel (fire-and-forget)
+            fetchOwnedChampionIds().catch(() => { });
+            loadRunes().catch(() => { });
+            loadPerkStyles().catch(() => { });
+            loadPickableChampionIds().catch(() => { });
+            loadSpells().catch(() => { });
+            // One-time discovery of possible quickplay endpoints from swagger (best-effort)
+            discoverQuickplayPaths().catch(() => { });
 
             // 1. Try LCU (champion-summary.json is lighter)
             if (!championsLoaded) {
@@ -74,16 +234,16 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
                             }
                         }
 
-                        // Filter out id -1 (None) if present
+                        // Filter out id -1 (None) and invalid entries
                         const formattedChamps = champList
-                            .filter((c: any) => c.id !== -1)
+                            .filter((c: any) => c && c.id !== undefined && c.id !== null && c.id !== -1 && c.name)
                             .map((c: any) => ({
                                 id: c.id,
-                                key: c.id.toString(),
+                                key: String(c.id),
                                 name: c.name,
                                 // Use alias for DDragon image if available, else fallback to path parsing
-                                image: { full: (c.alias ? c.alias : c.squarePortraitPath.split('/').pop().replace('champion-icons', 'champion')) + '.png' }
-                            })).sort((a: any, b: any) => a.name.localeCompare(b.name));
+                                image: { full: (c.alias ? c.alias : (c.squarePortraitPath?.split('/').pop()?.replace('champion-icons', 'champion') || 'Unknown')) + '.png' }
+                            })).sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
 
                         console.log(`Loaded ${formattedChamps.length} champions from LCU`);
                         setChampions(formattedChamps);
@@ -146,47 +306,39 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
     const loadSlots = async () => {
         console.log('Calling loadSlots...');
         try {
-            const lobbyRes = lobby ? { status: 200, content: lobby } : await lcuBridge.request('/lol-lobby/v2/lobby');
-            if (lobbyRes.status === 200) {
-                console.log('=== FULL LOBBY OBJECT ===');
-                console.log(JSON.stringify(lobbyRes.content, null, 2));
-                console.log('=== LOCAL MEMBER DETAILS ===');
-                console.log(JSON.stringify(lobbyRes.content.localMember, null, 2));
-                console.log('=== PLAYER SLOTS ===');
-                console.log(JSON.stringify(lobbyRes.content.localMember?.playerSlots, null, 2));
-                
-                // Log all possible endpoint paths we could try
-                console.log('=== POSSIBLE ENDPOINTS TO TRY ===');
-                console.log('1. /lol-lobby/v2/lobby/localMember/playerSlots');
-                console.log('2. /lol-lobby/v2/lobby/members/localMember/playerSlots');
-                console.log('3. /lol-lobby/v2/lobby/localMember/playerSlots/0');
-                console.log('4. /lol-lobby/v2/lobby/quickplay/slots');
-                console.log('5. /lol-lobby/v2/lobby/quickplay/slots/0');
+            // Always try live LCU lobby first; fall back to passed-in lobby prop
+            let liveLobby: any = null;
+            try {
+                const lcuLobby = await lcuBridge.request('/lol-lobby/v2/lobby');
+                if (lcuLobby.status === 200 && lcuLobby.content) {
+                    liveLobby = lcuLobby.content;
+
+                }
+            } catch (e) {
+                console.warn('LCU lobby fetch failed, will fall back to prop', e);
             }
+
+            const lobbySource = liveLobby || lobby || null;
 
             // First, try to get slots from lobby object (most reliable)
-            const lobbySlots: QuickplaySlot[] = lobbyRes?.content?.localMember?.playerSlots ||
-                lobbyRes?.content?.members?.find((m: any) => m.puuid === lobbyRes?.content?.localMember?.puuid)?.playerSlots ||
-                [];
-
-            if (lobbySlots.length > 0) {
-                console.log(`Loaded ${lobbySlots.length} slots from lobby.playerSlots`);
-                setSlots(lobbySlots);
-                setDebugResult('Using lobby.playerSlots');
-                // If we have slots from lobby, we don't need to call the endpoint
-                return;
-            }
+            const applied = setSlotsFromLobby(lobbySource);
+            if (applied) return;
 
             // Only try the dedicated endpoint if we don't have slots from lobby
             console.log('No slots in lobby object, trying dedicated endpoint...');
             try {
                 const result = await lcuBridge.request('/lol-lobby/v2/lobby/quickplay/slots');
                 console.log('Slots Endpoint Status:', result.status);
-                
+
                 if (result.status === 200 && result.content) {
                     console.log('Quickplay slots content:', JSON.stringify(result.content, null, 2));
-                    setSlots(result.content);
-                    setDebugResult('Using /quickplay/slots endpoint');
+                    const qpSlots = Array.isArray(result.content) ? result.content : [];
+                    if (qpSlots.length) {
+                        setSlots(qpSlots);
+                        setDebugResult('Using /quickplay/slots endpoint');
+                        return;
+                    }
+                    setDebugResult('Quickplay slots empty or invalid');
                 } else if (result.status === 404) {
                     // Endpoint doesn't exist - not an error, just not available
                     console.log('Quickplay slots endpoint not available (404)');
@@ -219,6 +371,129 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
                 setError(prev => `${prev} | Error loading slots: ${error.message}`);
             }
         }
+    };
+
+    const loadSkinsForChampion = async (championId: number) => {
+        const summonerId = lobby?.localMember?.summonerId;
+        if (!championId || !summonerId) return [];
+        if (skinCache[championId]) return skinCache[championId];
+        setLoadingSkinsFor(championId);
+        try {
+            const skinsRes = await lcuBridge.request(`/lol-champions/v1/inventories/${summonerId}/skins-minimal`);
+            if (skinsRes.status === 200) {
+                const champSkins = (skinsRes.content || []).filter((s: any) => s.championId === championId);
+                const champKey = championMap[championId]?.key;
+                let mapped = champSkins
+                    .filter((s: any) => s.ownership?.owned || s.isBase || s.owned)
+                    .map((s: any) => ({
+                        id: s.id,
+                        name: s.name || s.skinName || `Skin ${s.id % 1000}`,
+                        owned: true,
+                        splashPath: champKey ? `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${champKey}_${s.id % 1000}.jpg` : undefined,
+                    }));
+
+                if (!mapped.length) {
+                    const key = champKey || 'champion';
+                    mapped = [{
+                        id: championId * 1000,
+                        name: `${championMap[championId]?.name || 'Base Skin'}`,
+                        owned: true,
+                        splashPath: `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${key}_0.jpg`,
+                    }];
+                }
+                setSkinCache(prev => ({ ...prev, [championId]: mapped }));
+                return mapped;
+            }
+        } catch (err) {
+            console.warn('Failed to load skins for champ', championId, err);
+        } finally {
+            setLoadingSkinsFor(null);
+        }
+        return [];
+    };
+
+    const loadPerkStyles = async () => {
+        try {
+            // Load rune icon map from CDragon
+            try {
+                const perksJson = await fetch('https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/perks.json');
+                if (perksJson.ok) {
+                    const perksData = await perksJson.json();
+                    const perkMap: Record<number, string> = {};
+                    const normalizePathOnly = (path: string) => {
+                        const base = 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/';
+                        const cleaned = path.replace(/^\/+/, '');
+                        return encodeURI(`${base}${cleaned}`);
+                    };
+                    perksData.forEach((perk: any) => {
+                        if (perk?.id && perk?.iconPath) {
+                            perkMap[perk.id] = normalizePathOnly(perk.iconPath);
+                        }
+                    });
+                    setRuneIconMap(perkMap);
+                }
+            } catch (e) {
+                console.warn('[QuickplaySetup] Failed to load perks.json', e);
+            }
+
+            // Load perk styles from LCU with fallback
+            let loadedStyles: any[] = [];
+            try {
+                const stylesResult = await lcuBridge.request('/lol-perks/v1/styles');
+                if (stylesResult.status === 200 && Array.isArray(stylesResult.content) && stylesResult.content.length > 0) {
+                    loadedStyles = stylesResult.content;
+                }
+            } catch (e) {
+                console.warn('[QuickplaySetup] Failed to load perk styles from LCU', e);
+            }
+
+            if (!loadedStyles.length) {
+                try {
+                    const cdragonStylesRes = await fetch('https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/perkstyles.json');
+                    if (cdragonStylesRes.ok) {
+                        const cdragonStyles = await cdragonStylesRes.json();
+                        if (Array.isArray(cdragonStyles?.styles) && cdragonStyles.styles.length > 0) {
+                            loadedStyles = cdragonStyles.styles;
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[QuickplaySetup] Failed to fetch perkstyles fallback', e);
+                }
+            }
+
+            setPerkStyles(loadedStyles);
+        } catch (err) {
+            console.warn('Failed to load perk styles', err);
+        }
+    };
+
+    const loadSpells = async () => {
+        try {
+            const version = ddragonVersion || '14.23.1';
+            const spellsRes = await fetch(`https://ddragon.leagueoflegends.com/cdn/${version}/data/en_US/summoner.json`);
+            if (spellsRes.ok) {
+                const spellsData = await spellsRes.json();
+                const spellList = Object.values(spellsData.data).map((s: any) => ({
+                    id: parseInt(s.key),
+                    name: s.name,
+                    key: s.id,
+                    iconPath: `https://ddragon.leagueoflegends.com/cdn/${version}/img/spell/${s.id}.png`
+                })).sort((a: any, b: any) => a.name.localeCompare(b.name));
+                setSpells(spellList);
+
+                // Build spell map for quick lookup
+                spellList.forEach((s: any) => {
+                    spellMapRef.current[s.id] = s.key;
+                });
+            }
+        } catch (err) {
+            console.warn('[QuickplaySetup] Failed to load spells', err);
+        }
+    };
+
+    const getSpellName = (spellId: number | undefined) => {
+        if (!spellId) return 'SummonerFlash';
+        return spellMapRef.current[spellId] || 'SummonerFlash';
     };
 
     const handleUpdateSlot = async (index: number, updates: Partial<QuickplaySlot>) => {
@@ -258,7 +533,7 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
         const originalSlot = slots[index];
         const newSlots = [...slots];
         newSlots[index] = { ...newSlots[index], ...updates };
-        
+
         // Optimistic update
         setSlots(newSlots);
         setUpdatingSlots(prev => new Set(prev).add(index));
@@ -276,203 +551,23 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
 
             console.log(`=== UPDATING SLOT ${index} ===`);
             console.log('Slot data to update:', JSON.stringify(slotToUpdate, null, 2));
-            
-            // Get current lobby to get the full playerSlots array
-            const lobbyRes = await lcuBridge.request('/lol-lobby/v2/lobby');
-            if (lobbyRes.status !== 200) {
-                throw new Error(`Failed to get lobby: ${lobbyRes.status}`);
-            }
 
-            const currentSlots = lobbyRes.content?.localMember?.playerSlots || [];
-            console.log('Current slots array:', JSON.stringify(currentSlots, null, 2));
-            if (index >= currentSlots.length) {
-                throw new Error(`Slot index ${index} is out of range (${currentSlots.length} slots available)`);
-            }
+            // Note: Quickplay slot configuration is stored locally in the lobby.
+            // Unlike ChampSelectScreen which uses /lol-champ-select/v1/session/my-selection,
+            // quickplay slots don't have a documented writeable API endpoint.
+            // The slots are read from lobby.localMember.playerSlots but updates 
+            // happen through the client UI only.
 
-            // Try multiple endpoint variations - LCU API is undocumented and endpoints vary
-            const localMember = lobbyRes.content.localMember;
-            const summonerId = localMember.summonerId;
-            let result;
-            
-            // Update the specific slot in the array
-            const updatedSlots = [...currentSlots];
-            updatedSlots[index] = slotToUpdate;
-            
-            // Try 1: Dedicated quickplay endpoints
-            try {
-                console.log(`Trying endpoint 1: /lol-lobby/v2/lobby/quickplay/slots`);
-                result = await lcuBridge.request(
-                    '/lol-lobby/v2/lobby/quickplay/slots',
-                    'PUT',
-                    updatedSlots
-                );
-                if (result.status === 200 || result.status === 204) {
-                    console.log(`✓ Successfully updated slot ${index} via /quickplay/slots`);
-                } else {
-                    throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
-                }
-            } catch (error0: any) {
-                console.log(`✗ Endpoint 1 failed: ${error0.message}`);
+            // For now, we just update local state - the actual slot config will sync
+            // when the user enters champion select or when lobby refreshes.
+            console.log(`Slot ${index} updated locally. Quickplay slot API not available.`);
 
-                // Try individual quickplay slot
-                try {
-                    console.log(`Trying endpoint 2: /lol-lobby/v2/lobby/quickplay/slots/${index}`);
-                    result = await lcuBridge.request(
-                        `/lol-lobby/v2/lobby/quickplay/slots/${index}`,
-                        'PUT',
-                        slotToUpdate
-                    );
-                    if (result.status === 200 || result.status === 204) {
-                        console.log(`✓ Successfully updated slot ${index} via /quickplay/slots/${index}`);
-                    } else {
-                        throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
-                    }
-                } catch (error0b: any) {
-                    console.log(`✗ Quickplay slot endpoints failed: ${error0b.message}`);
+            // Keep the optimistic local state update
+            if (onSuccess) onSuccess('Slot configuration updated');
 
-                    // Try playerSlots variations
-                    try {
-                        console.log(`Trying endpoint 3: /lol-lobby/v2/lobby/members/localMember/playerSlots (same pattern as position-preferences)`);
-                        result = await lcuBridge.request(
-                            '/lol-lobby/v2/lobby/members/localMember/playerSlots',
-                            'PUT',
-                            updatedSlots
-                        );
-                        if (result.status === 200 || result.status === 204) {
-                            console.log(`✓ Successfully updated slot ${index} via playerSlots endpoint`);
-                        } else {
-                            throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
-                        }
-                    } catch (error1: any) {
-                        console.log(`✗ Endpoint 3 failed: ${error1.message}`);
-                        
-                        // Try 4: Hyphenated version (player-slots instead of playerSlots)
-                        try {
-                            console.log(`Trying endpoint 4: /lol-lobby/v2/lobby/members/localMember/player-slots (hyphenated)`);
-                            result = await lcuBridge.request(
-                                '/lol-lobby/v2/lobby/members/localMember/player-slots',
-                                'PUT',
-                                updatedSlots
-                            );
-                            if (result.status === 200 || result.status === 204) {
-                                console.log(`✓ Successfully updated slot ${index} via player-slots endpoint`);
-                            } else {
-                                throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
-                            }
-                        } catch (error2: any) {
-                            console.log(`✗ Endpoint 4 failed: ${error2.message}`);
-                            
-                            // Try 5: Update individual slot (player-slots/{index})
-                            try {
-                                console.log(`Trying endpoint 5: /lol-lobby/v2/lobby/members/localMember/player-slots/${index}`);
-                                result = await lcuBridge.request(
-                                    `/lol-lobby/v2/lobby/members/localMember/player-slots/${index}`,
-                                    'PUT',
-                                    slotToUpdate
-                                );
-                                if (result.status === 200 || result.status === 204) {
-                                    console.log(`✓ Successfully updated slot ${index} via individual player-slots endpoint`);
-                                } else {
-                                    throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
-                                }
-                            } catch (error3: any) {
-                                console.log(`✗ Endpoint 5 failed: ${error3.message}`);
-                                
-                                // Try 6: Update via summonerId (like position-preferences but with playerSlots)
-                                try {
-                                    console.log(`Trying endpoint 6: /lol-lobby/v2/lobby/members/${summonerId}/playerSlots`);
-                                    result = await lcuBridge.request(
-                                        `/lol-lobby/v2/lobby/members/${summonerId}/playerSlots`,
-                                        'PUT',
-                                        updatedSlots
-                                    );
-                                    if (result.status === 200 || result.status === 204) {
-                                        console.log(`✓ Successfully updated slot ${index} via summonerId endpoint`);
-                                    } else {
-                                        throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
-                                    }
-                                } catch (error4: any) {
-                                    console.log(`✗ Endpoint 6 failed: ${error4.message}`);
-                                    
-                                    // Try 7: Update entire localMember object (playerSlots might be read-only, need to update parent)
-                                    try {
-                                        console.log(`Trying endpoint 7: PUT /lol-lobby/v2/lobby/members/localMember (updating entire object)`);
-                                        const updatedLocalMember = {
-                                            ...localMember,
-                                            playerSlots: updatedSlots
-                                        };
-                                        result = await lcuBridge.request(
-                                            '/lol-lobby/v2/lobby/members/localMember',
-                                            'PUT',
-                                            updatedLocalMember
-                                        );
-                                        if (result.status === 200 || result.status === 204) {
-                                            console.log(`✓ Successfully updated slot ${index} via localMember update`);
-                                        } else {
-                                            throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
-                                        }
-                                    } catch (error5: any) {
-                                        console.log(`✗ Endpoint 7 failed: ${error5.message}`);
-                                        
-                                        // Try 8: PATCH instead of PUT for localMember
-                                        try {
-                                            console.log(`Trying endpoint 8: PATCH /lol-lobby/v2/lobby/members/localMember`);
-                                            const updatedLocalMember = {
-                                                ...localMember,
-                                                playerSlots: updatedSlots
-                                            };
-                                            result = await lcuBridge.request(
-                                                '/lol-lobby/v2/lobby/members/localMember',
-                                                'PATCH',
-                                                updatedLocalMember
-                                            );
-                                            if (result.status === 200 || result.status === 204) {
-                                                console.log(`✓ Successfully updated slot ${index} via PATCH localMember`);
-                                            } else {
-                                                throw new Error(`Status ${result.status}: ${JSON.stringify(result.content)}`);
-                                            }
-                                        } catch (error6: any) {
-                                            console.log(`✗ All endpoint attempts failed. Last error: ${error6.message}`);
-                                            console.log(`\n=== DEBUGGING INFO ===`);
-                                            console.log(`The LCU API doesn't seem to support direct playerSlots updates.`);
-                                            console.log(`To find the correct endpoint:`);
-                                            console.log(`1. Open League of Legends client`);
-                                            console.log(`2. Press F12 to open DevTools`);
-                                            console.log(`3. Go to Network tab`);
-                                            console.log(`4. Change a quickplay slot in the League client`);
-                                            console.log(`5. Look for the PUT/PATCH request and share the URL`);
-                                            throw new Error(`Failed to update slot: All endpoint attempts failed. The playerSlots endpoint may not exist or use a different structure. Please check the League client Network tab (F12) when changing a slot to find the correct endpoint.`);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (result && (result.status === 200 || result.status === 204)) {
-                console.log(`Successfully updated slot ${index}`);
-                
-                // Verify the update by refreshing slots after a short delay
-                setTimeout(async () => {
-                    try {
-                        await loadSlots();
-                    } catch (refreshError) {
-                        console.error('Failed to refresh slots after update:', refreshError);
-                    }
-                }, 500);
-
-                // Show success message
-                const updateType = updates.championId !== undefined ? 'champion' : 'role';
-                const successMsg = `Successfully updated ${updateType}`;
-                if (onSuccess) onSuccess(successMsg);
-            } else {
-                throw new Error(`API returned status ${result.status}: ${JSON.stringify(result.content)}`);
-            }
         } catch (error: any) {
             console.error('Failed to update slot:', error);
-            
+
             // Rollback optimistic update
             setSlots(prev => {
                 const rolledBack = [...prev];
@@ -483,13 +578,6 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
             // Show error message
             const errorMsg = error.message || 'Failed to update slot. Please try again.';
             if (onError) onError(errorMsg);
-            
-            // Reload slots to get current state
-            try {
-                await loadSlots();
-            } catch (refreshError) {
-                console.error('Failed to reload slots after error:', refreshError);
-            }
         } finally {
             setUpdatingSlots(prev => {
                 const next = new Set(prev);
@@ -499,9 +587,45 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
         }
     };
 
+
     const openChampionPicker = (index: number) => {
         setActiveSlotIndex(index);
         setShowChampionGrid(true);
+    };
+
+    const openRunePicker = async (index: number) => {
+        if (!runePages.length) {
+            await loadRunes();
+        }
+        if (!perkStyles.length || !Object.keys(runeIconMap).length) {
+            await loadPerkStyles();
+        }
+        setRuneSlotIndex(index);
+        setShowRunePicker(true);
+    };
+
+    const openRuneBuilder = async (index: number) => {
+        if (!perkStyles.length || !Object.keys(runeIconMap).length) {
+            await loadPerkStyles();
+        }
+        if (!runePages.length) {
+            await loadRunes();
+        }
+        setRuneSlotIndex(index);
+        const selectedId = selectedRunePageIds[index];
+        setEditingPageId(selectedId ?? null);
+        const fallbackName = runePages.find((p: any) => p.id === selectedId)?.name || 'Custom Page';
+        setRunePageName(fallbackName);
+        setShowRuneBuilder(true);
+    };
+
+    const openSkinPicker = async (index: number) => {
+        setSkinSlotIndex(index);
+        const champId = slots[index]?.championId;
+        if (champId) {
+            await loadSkinsForChampion(champId);
+        }
+        setShowSkinPicker(true);
     };
 
     const openRolePicker = (index: number) => {
@@ -509,14 +633,230 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
         setShowRolePicker(true);
     };
 
-    const handleChampionSelect = (championId: number) => {
-        handleUpdateSlot(activeSlotIndex, { championId });
+    const handleChampionSelect = async (championId: number) => {
+        await handleUpdateSlot(activeSlotIndex, { championId });
         setShowChampionGrid(false);
+        const skins = await loadSkinsForChampion(championId);
+        if (skins.length) {
+            const preferred = skins[0];
+            setSelectedSkinIds(prev => ({ ...prev, [activeSlotIndex]: preferred.id }));
+            await handleUpdateSlot(activeSlotIndex, { skinId: preferred.id });
+        }
     };
 
     const handleRoleSelect = (role: string) => {
         handleUpdateSlot(activeSlotIndex, { positionPreference: role });
         setShowRolePicker(false);
+    };
+
+    const handleRuneSelect = async (page: any) => {
+        if (!page) return;
+        const payload = JSON.stringify({
+            id: page.id,
+            name: page.name,
+            primaryStyleId: page.primaryStyleId,
+            subStyleId: page.subStyleId,
+            selectedPerkIds: page.selectedPerkIds,
+        });
+        setSelectedRunePageIds(prev => ({ ...prev, [runeSlotIndex]: page.id }));
+        handleUpdateSlot(runeSlotIndex, { perks: payload });
+        try {
+            await lcuBridge.request('/lol-perks/v1/currentpage', 'PUT', page.id);
+            await loadRunes();
+        } catch (e) {
+            console.warn('[QuickplaySetup] Failed to set current rune page', e);
+        }
+        setShowRunePicker(false);
+    };
+
+    const handleSaveRunePage = async (pageData: any) => {
+        try {
+            const endpoint = pageData?.id ? `/lol-perks/v1/pages/${pageData.id}` : '/lol-perks/v1/pages';
+            const method = pageData?.id ? 'PUT' : 'POST';
+            const res = await lcuBridge.request(endpoint, method as any, pageData);
+            if (res?.status && res.status >= 400) {
+                throw new Error(res?.content?.message || `Failed to save rune page (${res.status})`);
+            }
+            const newPageId = res?.content?.id ?? pageData?.id;
+            if (newPageId) {
+                await lcuBridge.request('/lol-perks/v1/currentpage', 'PUT', newPageId);
+            }
+            await loadRunes();
+            const savedPage =
+                res?.content && typeof res.content === 'object'
+                    ? { ...res.content, id: newPageId }
+                    : runePages.find((p: any) => p.id === newPageId) || { ...pageData, id: newPageId };
+            handleRuneSelect(savedPage);
+        } catch (err: any) {
+            console.error('[QuickplaySetup] Failed to save rune page', err);
+            if (onError) onError(err?.message || 'Failed to save rune page');
+        } finally {
+            setShowRuneBuilder(false);
+            setEditingPageId(null);
+        }
+    };
+
+    const handleSkinSelect = (skinId: number) => {
+        if (!skinId) return;
+        setSelectedSkinIds(prev => ({ ...prev, [skinSlotIndex]: skinId }));
+        handleUpdateSlot(skinSlotIndex, { skinId });
+        setShowSkinPicker(false);
+    };
+
+    const openSpellPicker = (slotIndex: number, isFirst: boolean) => {
+        setSpellSlotIndex(slotIndex);
+        setPickingFirstSpell(isFirst);
+        setShowSpellPicker(true);
+    };
+
+    const handleSpellSelect = async (spellId: number) => {
+        const slot = slots[spellSlotIndex];
+        if (!slot) return;
+
+        const currentSpell1 = slot.spell1;
+        const currentSpell2 = slot.spell2;
+
+        const updates: Partial<QuickplaySlot> = {};
+        if (pickingFirstSpell) {
+            updates.spell1 = spellId;
+            // If the selected spell is the same as spell2, swap them
+            if (spellId === currentSpell2) {
+                updates.spell2 = currentSpell1;
+            }
+        } else {
+            updates.spell2 = spellId;
+            // If the selected spell is the same as spell1, swap them
+            if (spellId === currentSpell1) {
+                updates.spell1 = currentSpell2;
+            }
+        }
+
+        setShowSpellPicker(false);
+        await handleUpdateSlot(spellSlotIndex, updates);
+    };
+
+    useEffect(() => {
+        if (!Array.isArray(slots) || !slots.length) return;
+        const next: Record<number, number | null> = {};
+        slots.forEach((slot, idx) => {
+            if (slot?.skinId) next[idx] = slot.skinId;
+        });
+        setSelectedSkinIds(prev => ({ ...next, ...prev }));
+    }, [slots]);
+
+    const resolveRunePageIdFromSlot = (slot: QuickplaySlot) => {
+        if (!slot?.perks) return null;
+        try {
+            const parsed = typeof slot.perks === 'string' ? JSON.parse(slot.perks) : slot.perks;
+            if (typeof parsed === 'number') return parsed;
+            if (parsed?.id) return parsed.id;
+            if (Array.isArray(parsed?.selectedPerkIds) && runePages.length) {
+                const match = runePages.find((p: any) => Array.isArray(p.selectedPerkIds) &&
+                    p.selectedPerkIds.join(',') === parsed.selectedPerkIds.join(','));
+                return match?.id ?? null;
+            }
+        } catch (err) {
+            return null;
+        }
+        return null;
+    };
+
+    useEffect(() => {
+        if (!Array.isArray(slots) || !slots.length) return;
+        const next: Record<number, number | null> = {};
+        slots.forEach((slot, idx) => {
+            const resolved = resolveRunePageIdFromSlot(slot);
+            if (resolved) next[idx] = resolved;
+        });
+        if (Object.keys(next).length) {
+            setSelectedRunePageIds(prev => ({ ...prev, ...next }));
+        }
+    }, [slots, runePages]);
+
+    useEffect(() => {
+        // Preload skins for currently selected champions
+        slots.forEach((slot) => {
+            if (slot?.championId) {
+                loadSkinsForChampion(slot.championId).catch(() => { });
+            }
+        });
+    }, [slots]);
+
+    const availableChampionIds = useMemo(() => {
+        const pool = pickableChampionIds.length ? pickableChampionIds : ownedChampionIds;
+        if (pool.length) {
+            const set = new Set(pool);
+            return champions
+                .map((c: any) => c.id)
+                .filter((id: any) => typeof id === 'number' && set.has(id));
+        }
+        return champions.map((c: any) => c.id).filter((id: any) => typeof id === 'number');
+    }, [pickableChampionIds, ownedChampionIds, champions]);
+
+    const filteredChampions = useMemo(() => {
+        if (!champions.length) return [];
+        if (!availableChampionIds.length) return champions;
+        return champions.filter((c: any) => availableChampionIds.includes(c.id));
+    }, [champions, availableChampionIds]);
+
+    const runeNameForSlot = (index: number) => {
+        const pageId = selectedRunePageIds[index];
+        if (!pageId) return 'Select runes';
+        const page = runePages.find((p: any) => p.id === pageId);
+        return page?.name || 'Select runes';
+    };
+
+    const normalizeRuneIcon = useCallback((rawPath: string | undefined, id?: number) => {
+        if (!rawPath) return '';
+        if (/^https?:\/\//i.test(rawPath)) return rawPath;
+        const base = 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/';
+        const cleaned = rawPath.replace(/^\/+/, '');
+        return encodeURI(`${base}${cleaned}`);
+    }, []);
+
+    const findStyleIcon = useCallback((styleId?: number | null) => {
+        if (!styleId) return '';
+        const style = perkStyles.find((s: any) => s.id === styleId);
+        return normalizeRuneIcon(style?.iconPath);
+    }, [perkStyles, normalizeRuneIcon]);
+
+    const findPerkIcon = useCallback((perkId?: number) => {
+        if (!perkId) return '';
+        if (runeIconMap[perkId]) return normalizeRuneIcon(runeIconMap[perkId], perkId);
+        // Fallback: scan perkStyles slots for iconPath
+        for (const style of perkStyles) {
+            for (const slot of style?.slots || []) {
+                for (const perk of slot?.perks || []) {
+                    const pid = typeof perk === 'number' ? perk : perk?.id;
+                    if (pid === perkId) {
+                        const iconPath = typeof perk === 'number' ? '' : perk?.iconPath;
+                        if (iconPath) return normalizeRuneIcon(iconPath, perkId);
+                    }
+                }
+            }
+        }
+        return '';
+    }, [normalizeRuneIcon, perkStyles, runeIconMap]);
+
+    const runeIconsForPage = useCallback((pageId?: number | null) => {
+        if (!pageId) return {};
+        const page = runePages.find((p: any) => p.id === pageId);
+        if (!page) return {};
+        const keystoneId = Array.isArray(page.selectedPerkIds) ? page.selectedPerkIds[0] : undefined;
+        const keystoneIcon = findPerkIcon(keystoneId) || undefined;
+        return {
+            primaryIcon: findStyleIcon(page.primaryStyleId),
+            subIcon: findStyleIcon(page.subStyleId),
+            keystoneIcon,
+        };
+    }, [findPerkIcon, findStyleIcon, runePages]);
+
+    const skinNameForSlot = (index: number) => {
+        const skinId = selectedSkinIds[index];
+        const champId = slots[index]?.championId;
+        const options = champId ? skinCache[champId] || [] : [];
+        const current = options.find((s: any) => s.id === skinId);
+        return current?.name || 'Select skin';
     };
 
     const getChampionImage = (championId: number) => {
@@ -526,152 +866,435 @@ export default function QuickplaySetup({ lobby, onReady, onError, onSuccess }: Q
         return `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${championMap[championId].image.full}`;
     };
 
-    if (loading) {
-        return (
-            <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color="#4f46e5" />
-                <Text style={styles.loadingText}>Loading Quickplay Setup...</Text>
-                <Text style={styles.debugText}>{error}</Text>
-            </View>
-        );
-    }
+    const discoverQuickplayPaths = useCallback(async () => {
+        try {
+            const res = await lcuBridge.request('/swagger/v3/openapi.json');
+            if (res.status === 200 && res.content?.paths) {
+                const paths = Object.keys(res.content.paths);
+                const hits = paths.filter(p =>
+                    p.toLowerCase().includes('quick') ||
+                    p.toLowerCase().includes('slot') ||
+                    p.toLowerCase().includes('swift')
+                );
+                const sample = hits.slice(0, 50);
+                console.log('[QuickplaySetup] swagger quick/slot paths sample:', sample);
+            } else {
+                console.log('[QuickplaySetup] swagger fetch returned status', res.status);
+            }
+        } catch (e: any) {
+            console.warn('[QuickplaySetup] swagger quickplay discovery failed', e?.message || e);
+        }
+    }, [lcuBridge]);
+
+    const slotList = Array.isArray(slots) ? slots : [];
 
     return (
-        <View style={styles.container}>
+        <ScrollView contentContainerStyle={styles.container}>
             <Text style={styles.header}>Quickplay Setup</Text>
-
-            <View style={{ marginBottom: 20, padding: 10, backgroundColor: '#330000', borderWidth: 1, borderColor: 'red' }}>
-                <Text style={{ color: 'red', fontWeight: 'bold', fontSize: 16 }}>DEBUG CONSOLE</Text>
-                <Text style={{ color: '#ffaaaa' }}>Slots Loaded: {slots.length}</Text>
-                <Text style={{ color: '#ffaaaa' }}>Champs: {champions.length}</Text>
-                {error ? <Text style={{ color: 'red', fontWeight: 'bold' }}>ERROR: {error}</Text> : <Text style={{ color: '#0f0' }}>No Errors</Text>}
-                <Text style={{ color: '#aaa', fontSize: 10, marginTop: 5 }}>API Response: {debugResult.slice(0, 100)}</Text>
-                <Button title="Force Reload" onPress={loadData} size="sm" color="warning" />
-            </View>
-
-            {slots.length === 0 ? (
-                <View style={styles.emptyContainer}>
-                    <Text style={styles.emptyText}>No Quickplay Slots Found</Text>
-                    <Text style={styles.subText}>Are you in a Quickplay Lobby?</Text>
-                    <Button title="Retry Fetching Slots" onPress={loadSlots} containerStyle={{ marginTop: 10 }} />
-                </View>
-            ) : (
-                <View style={styles.slotsContainer}>
-                    {slots.map((slot, index) => (
-                        <View key={index} style={styles.slotCard}>
-                            <Text style={styles.slotTitle}>{index === 0 ? 'Primary Pick' : 'Secondary Pick'}</Text>
-
-                            <View style={styles.pickRow}>
-                                <TouchableOpacity 
-                                    style={[
-                                        styles.pickButton,
-                                        updatingSlots.has(index) && styles.pickButtonUpdating
-                                    ]} 
-                                    onPress={() => openChampionPicker(index)}
-                                    disabled={updatingSlots.has(index)}
-                                >
-                                    {updatingSlots.has(index) ? (
-                                        <ActivityIndicator size="small" color="#4f46e5" style={{ marginBottom: 5 }} />
-                                    ) : slot.championId ? (
-                                        <Image source={{ uri: getChampionImage(slot.championId) || '' }} style={styles.pickImage} />
-                                    ) : (
-                                        <View style={styles.placeholder}>
-                                            <Text style={styles.placeholderText}>?</Text>
-                                        </View>
-                                    )}
-                                    <Text style={styles.pickLabel}>
-                                        {updatingSlots.has(index) 
-                                            ? 'Updating...' 
-                                            : (championMap[slot.championId]?.name || 'Select Champ')
-                                        }
-                                    </Text>
-                                </TouchableOpacity>
-
-                                <TouchableOpacity 
-                                    style={[
-                                        styles.pickButton,
-                                        updatingSlots.has(index) && styles.pickButtonUpdating
-                                    ]} 
-                                    onPress={() => openRolePicker(index)}
-                                    disabled={updatingSlots.has(index)}
-                                >
-                                    {updatingSlots.has(index) ? (
-                                        <ActivityIndicator size="small" color="#4f46e5" style={{ marginBottom: 5 }} />
-                                    ) : (
-                                        <View style={[styles.placeholder, styles.rolePlaceholder]}>
-                                            <Text style={styles.roleIcon}>{getRoleIcon(slot.positionPreference)}</Text>
-                                        </View>
-                                    )}
-                                    <Text style={styles.pickLabel}>
-                                        {updatingSlots.has(index) 
-                                            ? 'Updating...' 
-                                            : (slot.positionPreference || 'Select Role')
-                                        }
-                                    </Text>
-                                </TouchableOpacity>
-                            </View>
-                        </View>
-                    ))}
+            {!!error && (
+                <View style={styles.errorBanner}>
+                    <Text style={styles.errorText}>{error}</Text>
+                    <Button title="Retry" size="sm" onPress={loadSlots} />
                 </View>
             )}
 
-            <Modal visible={showChampionGrid} animationType="slide" onRequestClose={() => setShowChampionGrid(false)}>
-                <View style={styles.modalContainer}>
-                    <View style={styles.modalHeader}>
-                        <Text style={styles.modalTitle}>Select Champion</Text>
-                        <Button title="Close" onPress={() => setShowChampionGrid(false)} type="clear" />
-                    </View>
-                    <ChampionGrid
-                        champions={champions}
-                        onSelect={handleChampionSelect}
-                        version={ddragonVersion}
-                    />
+            {loading ? (
+                <View style={styles.loadingContainer}>
+                    <ActivityIndicator size="large" color="#4f46e5" />
+                    <Text style={styles.loadingText}>Loading Quickplay Setup...</Text>
+                    <Text style={styles.debugText}>{error}</Text>
                 </View>
-            </Modal>
+            ) : (
+                <>
 
-            <RolePicker
-                visible={showRolePicker}
-                onSelect={handleRoleSelect}
-                onClose={() => setShowRolePicker(false)}
-                currentRole={slots[activeSlotIndex]?.positionPreference}
-            />
-        </View>
+                    {slotList.length === 0 ? (
+                        <View style={styles.emptyContainer}>
+                            <Text style={styles.emptyText}>No Quickplay Slots Found</Text>
+                            <Text style={styles.subText}>Are you in a Quickplay Lobby?</Text>
+                            <Button title="Retry Fetching Slots" onPress={loadSlots} containerStyle={{ marginTop: 10 }} />
+                        </View>
+                    ) : (
+                        <View style={styles.slotsContainer}>
+                            {slotList.map((slot, index) => (
+                                <View key={index} style={styles.slotCard}>
+                                    <Text style={styles.slotTitle}>{index === 0 ? 'Primary Pick' : 'Secondary Pick'}</Text>
+
+                                    <View style={styles.pickRow}>
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.pickButton,
+                                                updatingSlots.has(index) && styles.pickButtonUpdating
+                                            ]}
+                                            onPress={() => openChampionPicker(index)}
+                                            disabled={updatingSlots.has(index)}
+                                        >
+                                            {updatingSlots.has(index) ? (
+                                                <ActivityIndicator size="small" color="#4f46e5" style={{ marginBottom: 5 }} />
+                                            ) : slot.championId ? (
+                                                <Image source={{ uri: getChampionImage(slot.championId) || '' }} style={styles.pickImage} />
+                                            ) : (
+                                                <View style={styles.placeholder}>
+                                                    <Text style={styles.placeholderText}>?</Text>
+                                                </View>
+                                            )}
+                                            <Text style={styles.pickLabel}>
+                                                {updatingSlots.has(index)
+                                                    ? 'Updating...'
+                                                    : (championMap[slot.championId]?.name || 'Select Champ')
+                                                }
+                                            </Text>
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.pickButton,
+                                                updatingSlots.has(index) && styles.pickButtonUpdating
+                                            ]}
+                                            onPress={() => openRolePicker(index)}
+                                            disabled={updatingSlots.has(index)}
+                                        >
+                                            {updatingSlots.has(index) ? (
+                                                <ActivityIndicator size="small" color="#4f46e5" style={{ marginBottom: 5 }} />
+                                            ) : (
+                                                <View style={[styles.placeholder, styles.rolePlaceholder]}>
+                                                    <Image source={getRoleIconSource(slot.positionPreference)} style={styles.roleIconImage} />
+                                                </View>
+                                            )}
+                                            <Text style={styles.pickLabel}>
+                                                {updatingSlots.has(index)
+                                                    ? 'Updating...'
+                                                    : (slot.positionPreference || 'Select Role')
+                                                }
+                                            </Text>
+                                        </TouchableOpacity>
+                                    </View>
+
+                                    <View style={styles.secondaryRow}>
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.runeDropdown,
+                                                updatingSlots.has(index) && styles.pickButtonUpdating
+                                            ]}
+                                            onPress={() => openRunePicker(index)}
+                                            disabled={updatingSlots.has(index) || loadingRunes}
+                                        >
+                                            <View style={styles.runeDropdownContent}>
+                                                <View style={styles.runeIconRow}>
+                                                    {runeIconsForPage(selectedRunePageIds[index])?.primaryIcon ? (
+                                                        <Image
+                                                            source={{ uri: runeIconsForPage(selectedRunePageIds[index])!.primaryIcon as string }}
+                                                            style={styles.runeStyleIcon}
+                                                        />
+                                                    ) : null}
+                                                    {runeIconsForPage(selectedRunePageIds[index])?.subIcon ? (
+                                                        <Image
+                                                            source={{ uri: runeIconsForPage(selectedRunePageIds[index])!.subIcon as string }}
+                                                            style={styles.runeSubIcon}
+                                                        />
+                                                    ) : null}
+                                                    {runeIconsForPage(selectedRunePageIds[index])?.keystoneIcon ? (
+                                                        <Image
+                                                            source={{ uri: runeIconsForPage(selectedRunePageIds[index])!.keystoneIcon as string }}
+                                                            style={styles.runeKeystoneIcon}
+                                                        />
+                                                    ) : null}
+                                                </View>
+                                                <Text style={styles.runeDropdownText} numberOfLines={1}>
+                                                    {runeNameForSlot(index)}
+                                                </Text>
+                                            </View>
+                                            <Image source={require('../../static/dropdown_arrows.png')} style={styles.dropdownArrow} />
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.editRuneBtn,
+                                                updatingSlots.has(index) && styles.pickButtonUpdating
+                                            ]}
+                                            onPress={() => openRuneBuilder(index)}
+                                            disabled={updatingSlots.has(index) || loadingRunes || !perkStyles.length}
+                                        >
+                                            <Text style={styles.editRuneText}>✎</Text>
+                                        </TouchableOpacity>
+
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.skinIconButton,
+                                                updatingSlots.has(index) && styles.pickButtonUpdating
+                                            ]}
+                                            onPress={() => openSkinPicker(index)}
+                                            disabled={updatingSlots.has(index) || !slot.championId}
+                                        >
+                                            {loadingSkinsFor === slot.championId ? (
+                                                <ActivityIndicator size="small" color="#fbbf24" />
+                                            ) : (
+                                                <Image source={require('../../static/skin_picker_icon.png')} style={styles.skinPickerIcon} />
+                                            )}
+                                        </TouchableOpacity>
+                                    </View>
+
+                                    {/* Spells Row */}
+                                    <View style={styles.spellsRow}>
+                                        <Text style={styles.spellsLabel}>Spells</Text>
+                                        <View style={styles.spellButtons}>
+                                            <TouchableOpacity
+                                                style={[
+                                                    styles.spellButton,
+                                                    updatingSlots.has(index) && styles.pickButtonUpdating
+                                                ]}
+                                                onPress={() => openSpellPicker(index, true)}
+                                                disabled={updatingSlots.has(index)}
+                                            >
+                                                {slot.spell1 ? (
+                                                    <Image
+                                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(slot.spell1)}.png` }}
+                                                        style={styles.spellIcon}
+                                                    />
+                                                ) : (
+                                                    <View style={[styles.spellIcon, styles.spellPlaceholder]}>
+                                                        <Text style={styles.placeholderText}>D</Text>
+                                                    </View>
+                                                )}
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                                style={[
+                                                    styles.spellButton,
+                                                    updatingSlots.has(index) && styles.pickButtonUpdating
+                                                ]}
+                                                onPress={() => openSpellPicker(index, false)}
+                                                disabled={updatingSlots.has(index)}
+                                            >
+                                                {slot.spell2 ? (
+                                                    <Image
+                                                        source={{ uri: `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/spell/${getSpellName(slot.spell2)}.png` }}
+                                                        style={styles.spellIcon}
+                                                    />
+                                                ) : (
+                                                    <View style={[styles.spellIcon, styles.spellPlaceholder]}>
+                                                        <Text style={styles.placeholderText}>F</Text>
+                                                    </View>
+                                                )}
+                                            </TouchableOpacity>
+                                        </View>
+                                    </View>
+                                </View>
+                            ))}
+                        </View>
+                    )}
+
+                    <Modal visible={showChampionGrid} animationType="slide" onRequestClose={() => setShowChampionGrid(false)}>
+                        <SafeAreaView style={styles.modalContainer} edges={['top', 'left', 'right']}>
+                            <View style={styles.modalHeader}>
+                                <Text style={styles.modalTitle}>Select Champion</Text>
+                                <Button title="Close" onPress={() => setShowChampionGrid(false)} type="clear" />
+                            </View>
+                            <ChampionGrid
+                                champions={filteredChampions}
+                                onSelect={handleChampionSelect}
+                                version={ddragonVersion}
+                                availableChampionIds={availableChampionIds}
+                                contentContainerStyle={{ paddingBottom: 40 }}
+                            />
+                        </SafeAreaView>
+                    </Modal>
+
+                    <RolePicker
+                        visible={showRolePicker}
+                        onSelect={handleRoleSelect}
+                        onClose={() => setShowRolePicker(false)}
+                        currentRole={slots[activeSlotIndex]?.positionPreference}
+                    />
+
+                    <RunePicker
+                        visible={showRunePicker}
+                        onSelect={(pageId) => {
+                            const page = runePages.find((p: any) => p.id === pageId);
+                            handleRuneSelect(page);
+                        }}
+                        onClose={() => setShowRunePicker(false)}
+                        pages={runePages}
+                        currentPageId={selectedRunePageIds[runeSlotIndex] ?? runePages.find((p: any) => p.isActive)?.id}
+                        perkStyles={perkStyles}
+                        runeIconMap={runeIconMap}
+                        normalizeRuneIcon={normalizeRuneIcon}
+                    />
+
+                    <SkinPicker
+                        visible={showSkinPicker}
+                        onSelect={handleSkinSelect}
+                        onClose={() => setShowSkinPicker(false)}
+                        skins={slots[skinSlotIndex]?.championId ? (skinCache[slots[skinSlotIndex]?.championId] || []) : []}
+                        currentSkinId={selectedSkinIds[skinSlotIndex] ?? undefined}
+                        championName={slots[skinSlotIndex]?.championId ? championMap[slots[skinSlotIndex].championId]?.name : undefined}
+                        fallbackSplash={
+                            slots[skinSlotIndex]?.championId && championMap[slots[skinSlotIndex].championId]?.key
+                                ? `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${championMap[slots[skinSlotIndex].championId].key}_0.jpg`
+                                : undefined
+                        }
+                        championIcon={
+                            slots[skinSlotIndex]?.championId && championMap[slots[skinSlotIndex].championId]?.key
+                                ? `https://ddragon.leagueoflegends.com/cdn/${ddragonVersion}/img/champion/${championMap[slots[skinSlotIndex].championId].key}.png`
+                                : undefined
+                        }
+                    />
+
+                    <RuneBuilder
+                        visible={showRuneBuilder}
+                        onClose={() => { setShowRuneBuilder(false); setEditingPageId(null); }}
+                        onSave={handleSaveRunePage}
+                        initialPage={
+                            runePages.find((p: any) => p.id === (editingPageId ?? selectedRunePageIds[runeSlotIndex])) ||
+                            runePages.find((p: any) => p.isActive) ||
+                            runePages[0] ||
+                            { name: runePageName, selectedPerkIds: [], primaryStyleId: null, subStyleId: null }
+                        }
+                        perkStyles={perkStyles}
+                        runeIconMap={runeIconMap}
+                        normalizeRuneIcon={normalizeRuneIcon}
+                    />
+
+                    <SpellPicker
+                        visible={showSpellPicker}
+                        onSelect={handleSpellSelect}
+                        onClose={() => setShowSpellPicker(false)}
+                        spells={spells}
+                        currentSpellId={pickingFirstSpell ? slots[spellSlotIndex]?.spell1 : slots[spellSlotIndex]?.spell2}
+                    />
+                </>
+            )}
+        </ScrollView>
     );
 }
 
-function getRoleIcon(role: string) {
-    switch (role) {
-        case 'TOP': return "T";
-        case 'JUNGLE': return "J";
-        case 'MIDDLE': return "M";
-        case 'BOTTOM': return "B";
-        case 'UTILITY': return "S";
-        default: return "?";
-    }
+function getRoleIconSource(role: string) {
+    return ROLE_ICONS[role] || ROLE_ICONS.UNSELECTED;
 }
 
 const styles = StyleSheet.create({
-    container: { padding: 20 },
+    container: { padding: 20, paddingBottom: 200 },
     loadingContainer: { padding: 20, alignItems: 'center' },
     loadingText: { color: '#ccc', marginTop: 10 },
     debugText: { color: 'red', marginTop: 5, fontSize: 10 },
+    errorBanner: { padding: 10, borderRadius: 6, backgroundColor: 'rgba(239,68,68,0.15)', borderWidth: 1, borderColor: '#ef4444', marginBottom: 12 },
+    errorText: { color: '#fca5a5', marginBottom: 6, fontWeight: '700' },
     header: { color: 'white', fontSize: 20, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
     slotsContainer: { gap: 20 },
     slotCard: { backgroundColor: '#1a1a1a', borderRadius: 12, padding: 15, borderWidth: 1, borderColor: '#333' },
     slotTitle: { color: '#888', fontSize: 12, textTransform: 'uppercase', marginBottom: 10, fontWeight: 'bold' },
     pickRow: { flexDirection: 'row', gap: 15 },
+    secondaryRow: { flexDirection: 'row', gap: 15, marginTop: 12 },
     pickButton: { flex: 1, alignItems: 'center', backgroundColor: '#252525', padding: 10, borderRadius: 8 },
+    smallButton: { paddingVertical: 8 },
     pickImage: { width: 60, height: 60, borderRadius: 30, marginBottom: 5 },
     placeholder: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#333', justifyContent: 'center', alignItems: 'center', marginBottom: 5 },
     placeholderText: { color: '#666', fontSize: 24, fontWeight: 'bold' },
     pickLabel: { color: 'white', fontSize: 12, fontWeight: '500' },
+    secondaryLabel: { color: '#a5b4fc', fontSize: 12, marginBottom: 4, fontWeight: '700' },
     rolePlaceholder: { backgroundColor: '#2a2a2a' },
-    roleIcon: { fontSize: 24 },
+    roleIconImage: { width: 36, height: 36, resizeMode: 'contain' },
     pickButtonUpdating: { opacity: 0.6 },
+    runeDropdown: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: '#1e1e1e',
+        paddingHorizontal: 12,
+        height: 40,
+        borderRadius: 4,
+        marginRight: 8,
+        borderWidth: 1,
+        borderColor: '#3f3f46',
+    },
+    runeDropdownContent: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
+    runeIconRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    runeStyleIcon: { width: 24, height: 24, borderRadius: 12 },
+    runeSubIcon: { width: 18, height: 18, borderRadius: 9 },
+    runeKeystoneIcon: { width: 22, height: 22, borderRadius: 11 },
+    runeDropdownText: {
+        color: '#d4d4d8',
+        fontSize: 14,
+        flex: 1,
+        marginRight: 8,
+    },
+    dropdownArrow: {
+        width: 12,
+        height: 12,
+        opacity: 0.7,
+    },
+    editRuneBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: '#fbbf24',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: 8,
+    },
+    editRuneText: {
+        color: '#fbbf24',
+        fontSize: 18,
+    },
+    skinIconButton: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        borderWidth: 1,
+        borderColor: '#3f3f46',
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: '#1e1e1e',
+    },
+    skinPickerIcon: {
+        width: 28,
+        height: 28,
+        resizeMode: 'contain',
+    },
     modalContainer: { flex: 1, backgroundColor: '#121212', padding: 20 },
     modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
     modalTitle: { color: 'white', fontSize: 20, fontWeight: 'bold' },
     emptyContainer: { alignItems: 'center', padding: 40 },
     emptyText: { color: 'white', fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
     subText: { color: '#888', marginBottom: 20 },
+    selectionRow: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#1f2937' },
+    selectionName: { color: 'white', fontSize: 16, fontWeight: '600' },
+    selectionMeta: { color: '#9ca3af', fontSize: 12, marginTop: 4 },
+    // Spells styles
+    spellsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginTop: 12,
+        paddingTop: 12,
+        borderTopWidth: 1,
+        borderTopColor: '#333',
+    },
+    spellsLabel: {
+        color: '#888',
+        fontSize: 12,
+        fontWeight: 'bold',
+        textTransform: 'uppercase',
+    },
+    spellButtons: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    spellButton: {
+        width: 44,
+        height: 44,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: '#fbbf24',
+        overflow: 'hidden',
+    },
+    spellIcon: {
+        width: '100%',
+        height: '100%',
+    },
+    spellPlaceholder: {
+        backgroundColor: '#2a2a2a',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
 });

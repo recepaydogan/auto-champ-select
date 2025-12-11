@@ -541,7 +541,6 @@ export default function LobbyScreen({
         return matchesSearch;
     });
 
-    console.log('[LobbyScreen] Filtered friends:', filteredFriends.length, 'Active tab:', activeTab);
 
     const availabilityColor = (availability?: string) => {
         const status = (availability || '').toLowerCase();
@@ -732,6 +731,19 @@ export default function LobbyScreen({
                             <Text style={styles.lobbySubtitle}>{subtitle}</Text>
                         </View>
 
+                        {isQuickplay && (
+                            <View style={styles.quickplayCard}>
+                                <Text style={styles.quickplayTitle}>TAMGAZ Setup</Text>
+                                <Text style={styles.quickplaySubtitle}>Pick 2 roles, champions, runes, and skins before queue</Text>
+                                <QuickplaySetup
+                                    lobby={lobby}
+                                    onReady={onEnterQueue}
+                                    onError={onError}
+                                    onSuccess={onSuccess}
+                                />
+                            </View>
+                        )}
+
                         {/* Position Selector */}
                         {showPositionSelector && (
                             <View style={styles.positionSelectorContainer}>
@@ -880,13 +892,15 @@ export default function LobbyScreen({
                                 <Text style={styles.acceptButtonText}>{readyCheck?.playerResponse === 'Accepted' ? 'ACCEPTED' : 'ACCEPT!'}</Text>
                             </TouchableOpacity>
 
-                            <TouchableOpacity
-                                style={styles.declineButton}
-                                onPress={onDeclineMatch}
-                                disabled={readyCheck?.playerResponse === 'Declined'}
-                            >
-                                <Text style={styles.declineButtonText}>DECLINE</Text>
-                            </TouchableOpacity>
+                            {readyCheck?.playerResponse !== 'Accepted' && (
+                                <TouchableOpacity
+                                    style={styles.declineButton}
+                                    onPress={onDeclineMatch}
+                                    disabled={readyCheck?.playerResponse === 'Declined'}
+                                >
+                                    <Text style={styles.declineButtonText}>DECLINE</Text>
+                                </TouchableOpacity>
+                            )}
                         </View>
                     )}
 
@@ -1187,6 +1201,26 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         marginBottom: 40,
     },
+    quickplayCard: {
+        width: '100%',
+        borderWidth: 1,
+        borderColor: GOLD,
+        borderRadius: 8,
+        padding: 12,
+        backgroundColor: 'rgba(8,13,18,0.6)',
+        marginBottom: 24,
+    },
+    quickplayTitle: {
+        color: GOLD,
+        fontSize: 18,
+        fontWeight: '800',
+        marginBottom: 4,
+    },
+    quickplaySubtitle: {
+        color: '#cfd5dd',
+        fontSize: 13,
+        marginBottom: 8,
+    },
     lobbyTitle: {
         fontSize: 32,
         fontWeight: '800',
@@ -1247,7 +1281,7 @@ const styles = StyleSheet.create({
         fontSize: 16,
         color: GOLD,
     },
- 
+
     memberOptionsIcon: {
         width: 36,
         height: 36,
@@ -1392,6 +1426,24 @@ const styles = StyleSheet.create({
         letterSpacing: 1,
         textTransform: 'uppercase',
         fontFamily: 'serif',
+    },
+    leaveLobbyButton: {
+        alignItems: 'center',
+        paddingVertical: 14,
+        marginTop: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(239, 68, 68, 0.5)',
+        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+        borderRadius: 4,
+    },
+    leaveLobbyButtonDisabled: {
+        opacity: 0.4,
+    },
+    leaveLobbyText: {
+        color: '#ef4444',
+        fontSize: 15,
+        fontWeight: '700',
+        letterSpacing: 0.5,
     },
     loadingText: {
         color: OFFWHITE,

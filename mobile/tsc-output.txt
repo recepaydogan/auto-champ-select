@@ -1,0 +1,5 @@
+﻿src/components/SkinPicker.tsx(55,61): error TS2339: Property 'placeholderText' does not exist on type '{ overlay: { flex: number; backgroundColor: string; justifyContent: "center"; alignItems: "center"; }; container: { backgroundColor: string; borderRadius: number; padding: number; width: "90%"; maxHeight: "80%"; }; ... 10 more ...; cancelButton: { ...; }; }'.
+src/screens/CreateLobbyScreen.tsx(262,79): error TS2339: Property 'mapId' does not exist on type 'never'.
+src/screens/CreateLobbyScreen.tsx(264,21): error TS2698: Spread types may only be created from object types.
+src/screens/CreateLobbyScreen.tsx(266,50): error TS2339: Property 'description' does not exist on type 'never'.
+src/screens/CreateLobbyScreen.tsx(266,81): error TS2339: Property 'shortName' does not exist on type 'never'.

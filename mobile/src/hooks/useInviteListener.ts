@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { getLCUBridge } from '../lib/lcuBridge';
+import { scheduleLobbyInviteNotification } from '../lib/notifications';
 
 export interface Invite {
     invitationId: string;
@@ -91,9 +92,16 @@ export function useInviteListener() {
                 if (activeInviteRef.current?.invitationId !== pendingInvite.invitationId) {
                     console.log('[useInviteListener] Found new pending invite:', pendingInvite.invitationId);
                     setActiveInvite(pendingInvite);
+
+                    // Send notification for new invite
                     fetchInviteDetails(pendingInvite).then((enhanced) => {
                         if (!cancelled && enhanced?.invitationId === pendingInvite.invitationId) {
                             setActiveInvite(enhanced);
+                            // Trigger notification with enhanced details
+                            scheduleLobbyInviteNotification(
+                                enhanced.fromSummonerName || 'A player',
+                                enhanced.queueName || 'a game'
+                            );
                         }
                     });
                 }

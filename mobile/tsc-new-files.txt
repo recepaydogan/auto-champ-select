@@ -1,0 +1,226 @@
+﻿node_modules/@types/node/module.d.ts(879,13): error TS2403: Subsequent variable declarations must have the same type.  Variable 'require' must be of type 'NodeRequire', but here has type 'Require'.
+node_modules/@types/react-native-vector-icons/Icon.d.ts(4,5): error TS2724: '"react-native"' has no exported member named 'TabBarIOSItemProps'. Did you mean 'TabBarIOSItemProperties'?
+node_modules/@types/react-native-vector-icons/Icon.d.ts(34,18): error TS2320: Interface 'IconButtonProps' cannot simultaneously extend types 'IconProps' and 'TouchableHighlightProps'.
+  Named property 'pressRetentionOffset' of types 'IconProps' and 'TouchableHighlightProps' are not identical.
+node_modules/@types/react-native-vector-icons/Icon.d.ts(34,18): error TS2320: Interface 'IconButtonProps' cannot simultaneously extend types 'IconProps' and 'TouchableNativeFeedbackProps'.
+  Named property 'pressRetentionOffset' of types 'IconProps' and 'TouchableNativeFeedbackProps' are not identical.
+node_modules/@types/react-native/BatchedBridge.d.ts(8,15): error TS2300: Duplicate identifier 'MessageQueue'.
+node_modules/@types/react-native/BatchedBridge.d.ts(18,20): error TS2300: Duplicate identifier 'BatchedBridge'.
+node_modules/@types/react-native/BatchedBridge.d.ts(22,20): error TS2300: Duplicate identifier 'MessageQueue'.
+node_modules/@types/react-native/Codegen.d.ts(1,1): error TS6200: Definitions of the following identifiers conflict with those in another file: codegenNativeCommands, NativeComponentType, codegenNativeComponent, BubblingEventHandler, DirectEventHandler, Double, Float, Int32, UnsafeObject, DefaultTypes, WithDefault
+node_modules/@types/react-native/Devtools.d.ts(2,17): error TS2300: Duplicate identifier 'StackFrame'.
+node_modules/@types/react-native/globals.d.ts(10,1): error TS6200: Definitions of the following identifiers conflict with those in another file: FormDataValue, FormDataPart, BodyInit_, HeadersInit_, RequestCredentials_, RequestMode_, ResponseType_, WebsocketMessageEventListener, WebsocketErrorEventListener, WebsocketOpenEventListener, WebsocketCloseEventListener, WebsocketEventListener
+node_modules/@types/react-native/globals.d.ts(58,13): error TS2403: Subsequent variable declarations must have the same type.  Variable 'Blob' must be of type '{ new (blobParts?: BlobPart[], options?: BlobPropertyBag): Blob; prototype: Blob; }', but here has type '{ new (blobParts?: (string | Blob)[], options?: BlobOptions): Blob; prototype: Blob; }'.
+node_modules/@types/react-native/globals.d.ts(77,15): error TS2300: Duplicate identifier 'FormData'.
+node_modules/@types/react-native/globals.d.ts(101,13): error TS2403: Subsequent variable declarations must have the same type.  Variable 'Headers' must be of type '{ new (init?: HeadersInit): Headers; prototype: Headers; }', but here has type '{ new (init?: HeadersInit_): Headers; prototype: Headers; }'.
+node_modules/@types/react-native/globals.d.ts(113,5): error TS2374: Duplicate index signature for type 'string'.
+node_modules/@types/react-native/globals.d.ts(135,5): error TS2717: Subsequent property declarations must have the same type.  Property 'body' must be of type 'BodyInit', but here has type 'BodyInit_'.
+node_modules/@types/react-native/globals.d.ts(137,5): error TS2717: Subsequent property declarations must have the same type.  Property 'headers' must be of type 'HeadersInit', but here has type 'HeadersInit_'.
+node_modules/@types/react-native/globals.d.ts(143,5): error TS2717: Subsequent property declarations must have the same type.  Property 'window' must be of type 'null', but here has type 'any'.
+node_modules/@types/react-native/globals.d.ts(157,13): error TS2403: Subsequent variable declarations must have the same type.  Variable 'Request' must be of type '{ new (input: RequestInfo | URL, init?: RequestInit): Request; prototype: Request; }', but here has type '{ new (input: string | Request, init?: RequestInit): Request; prototype: Request; }'.
+node_modules/@types/react-native/globals.d.ts(162,14): error TS2300: Duplicate identifier 'RequestInfo'.
+node_modules/@types/react-native/globals.d.ts(165,5): error TS2717: Subsequent property declarations must have the same type.  Property 'headers' must be of type 'HeadersInit', but here has type 'HeadersInit_'.
+node_modules/@types/react-native/globals.d.ts(181,13): error TS2403: Subsequent variable declarations must have the same type.  Variable 'Response' must be of type '{ new (body?: BodyInit, init?: ResponseInit): Response; prototype: Response; error(): Response; json(data: any, init?: ResponseInit): Response; redirect(url: string | URL, status?: number): Response; }', but here has type '{ new (body?: BodyInit_, init?: ResponseInit): Response; prototype: Response; error: () => Response; redirect: (url: string, status?: number) => Response; }'.
+node_modules/@types/react-native/globals.d.ts(258,5): error TS2717: Subsequent property declarations must have the same type.  Property 'abort' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/@types/react-native/globals.d.ts(259,5): error TS2717: Subsequent property declarations must have the same type.  Property 'error' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/@types/react-native/globals.d.ts(260,5): error TS2717: Subsequent property declarations must have the same type.  Property 'load' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/@types/react-native/globals.d.ts(261,5): error TS2717: Subsequent property declarations must have the same type.  Property 'loadend' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/@types/react-native/globals.d.ts(262,5): error TS2717: Subsequent property declarations must have the same type.  Property 'loadstart' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/@types/react-native/globals.d.ts(263,5): error TS2717: Subsequent property declarations must have the same type.  Property 'progress' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/@types/react-native/globals.d.ts(264,5): error TS2717: Subsequent property declarations must have the same type.  Property 'timeout' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/@types/react-native/globals.d.ts(305,14): error TS2300: Duplicate identifier 'XMLHttpRequestResponseType'.
+node_modules/@types/react-native/globals.d.ts(312,15): error TS2300: Duplicate identifier 'URL'.
+node_modules/@types/react-native/globals.d.ts(337,15): error TS2300: Duplicate identifier 'URLSearchParams'.
+node_modules/@types/react-native/globals.d.ts(382,5): error TS2717: Subsequent property declarations must have the same type.  Property 'onopen' must be of type '(this: WebSocket, ev: Event) => any', but here has type '() => void'.
+node_modules/@types/react-native/globals.d.ts(383,5): error TS2717: Subsequent property declarations must have the same type.  Property 'onmessage' must be of type '(this: WebSocket, ev: MessageEvent<any>) => any', but here has type '(event: WebSocketMessageEvent) => void'.
+node_modules/@types/react-native/globals.d.ts(384,5): error TS2717: Subsequent property declarations must have the same type.  Property 'onerror' must be of type '(this: WebSocket, ev: Event) => any', but here has type '(event: WebSocketErrorEvent) => void'.
+node_modules/@types/react-native/globals.d.ts(385,5): error TS2717: Subsequent property declarations must have the same type.  Property 'onclose' must be of type '(this: WebSocket, ev: CloseEvent) => any', but here has type '(event: WebSocketCloseEvent) => void'.
+node_modules/@types/react-native/globals.d.ts(386,5): error TS2717: Subsequent property declarations must have the same type.  Property 'addEventListener' must be of type '{ <K extends keyof WebSocketEventMap>(type: K, listener: (this: WebSocket, ev: WebSocketEventMap[K]) => any, options?: boolean | AddEventListenerOptions): void; (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void; }', but here has type 'WebsocketEventListener'.
+node_modules/@types/react-native/globals.d.ts(387,5): error TS2717: Subsequent property declarations must have the same type.  Property 'removeEventListener' must be of type '{ <K extends keyof WebSocketEventMap>(type: K, listener: (this: WebSocket, ev: WebSocketEventMap[K]) => any, options?: boolean | EventListenerOptions): void; (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void; }', but here has type 'WebsocketEventListener'.
+node_modules/@types/react-native/globals.d.ts(390,13): error TS2403: Subsequent variable declarations must have the same type.  Variable 'WebSocket' must be of type '{ new (url: string | URL, protocols?: string | string[]): WebSocket; prototype: WebSocket; readonly CONNECTING: 0; readonly OPEN: 1; readonly CLOSING: 2; readonly CLOSED: 3; }', but here has type '{ new (uri: string, protocols?: string | string[], options?: { [optionName: string]: any; headers: { [headerName: string]: string; }; }): WebSocket; prototype: WebSocket; readonly CLOSED: number; readonly CLOSING: number; readonly CONNECTING: number; readonly OPEN: number; }'.
+node_modules/@types/react-native/globals.d.ts(414,15): error TS2300: Duplicate identifier 'AbortSignal'.
+node_modules/@types/react-native/globals.d.ts(414,15): error TS2420: Class 'AbortSignal' incorrectly implements interface 'EventTarget'.
+  Property 'dispatchEvent' is missing in type 'AbortSignal' but required in type 'EventTarget'.
+node_modules/@types/react-native/globals.d.ts(449,15): error TS2300: Duplicate identifier 'AbortController'.
+node_modules/@types/react-native/globals.d.ts(474,14): error TS2717: Subsequent property declarations must have the same type.  Property 'error' must be of type 'DOMException', but here has type 'Error'.
+node_modules/@types/react-native/globals.d.ts(481,14): error TS2717: Subsequent property declarations must have the same type.  Property 'readyState' must be of type '0 | 2 | 1', but here has type 'number'.
+node_modules/@types/react-native/index.d.ts(9873,11): error TS2451: Cannot redeclare block-scoped variable 'originalXMLHttpRequest'.
+node_modules/@types/react-native/index.d.ts(9875,11): error TS2451: Cannot redeclare block-scoped variable '__BUNDLE_START_TIME__'.
+node_modules/@types/react-native/index.d.ts(9876,11): error TS2451: Cannot redeclare block-scoped variable 'ErrorUtils'.
+node_modules/@types/react-native/index.d.ts(9883,11): error TS2451: Cannot redeclare block-scoped variable '__DEV__'.
+node_modules/@types/react-native/index.d.ts(9885,11): error TS2451: Cannot redeclare block-scoped variable 'HermesInternal'.
+node_modules/@types/react-native/legacy-properties.d.ts(1,1): error TS6200: Definitions of the following identifiers conflict with those in another file: TextProperties, TextPropertiesIOS, TextPropertiesAndroid, AccessibilityProperties, AccessibilityPropertiesIOS, AccessibilityPropertiesAndroid, TextInputProperties, TextInputIOSProperties, TextInputAndroidProperties, ViewProperties, ViewPropertiesIOS, ViewPropertiesAndroid, ScrollViewProperties, ScrollViewPropertiesIOS, ScrollViewPropertiesAndroid, InputAccessoryViewProperties, ActivityIndicatorProperties, ActivityIndicatorIOSProperties, DrawerLayoutAndroidProperties, ProgressBarAndroidProperties, RefreshControlProperties, RefreshControlPropertiesIOS, RefreshControlPropertiesAndroid, ImagePropertiesSourceOptions, ImageProperties, ImagePropertiesIOS, ImagePropertiesAndroid, ImageBackgroundProperties, FlatListProperties, VirtualizedListProperties, SectionListProperties, ModalProperties, TouchableWithoutFeedbackProperties, TouchableHighlightProperties, TouchableOpacityProperties, TouchableNativeFeedbackProperties, ButtonProperties, StatusBarProperties, StatusBarPropertiesIOS, StatusBarPropertiesAndroid, SwitchProperties, SwitchPropertiesIOS
+node_modules/@types/react-native/legacy-properties.d.ts(8,5): error TS2724: '"react-native"' has no exported member named 'DatePickerIOSProps'. Did you mean 'DatePickerIOSProperties'?
+node_modules/@types/react-native/legacy-properties.d.ts(17,5): error TS2724: '"react-native"' has no exported member named 'ListViewProps'. Did you mean 'ViewProps'?
+node_modules/@types/react-native/legacy-properties.d.ts(18,5): error TS2724: '"react-native"' has no exported member named 'MaskedViewIOSProps'. Did you mean 'MaskedViewIOSProperties'?
+node_modules/@types/react-native/legacy-properties.d.ts(20,5): error TS2724: '"react-native"' has no exported member named 'NavigatorIOSProps'. Did you mean 'NavigatorIOSProperties'?
+node_modules/@types/react-native/legacy-properties.d.ts(22,5): error TS2724: '"react-native"' has no exported member named 'ProgressViewIOSProps'. Did you mean 'ProgressViewIOSProperties'?
+node_modules/@types/react-native/legacy-properties.d.ts(23,5): error TS2724: '"react-native"' has no exported member named 'RecyclerViewBackedScrollViewProps'. Did you mean 'RecyclerViewBackedScrollViewProperties'?
+node_modules/@types/react-native/legacy-properties.d.ts(31,5): error TS2305: Module '"react-native"' has no exported member 'SliderProps'.
+node_modules/@types/react-native/legacy-properties.d.ts(32,5): error TS2724: '"react-native"' has no exported member named 'SliderPropsAndroid'. Did you mean 'SliderPropertiesAndroid'?
+node_modules/@types/react-native/legacy-properties.d.ts(33,5): error TS2305: Module '"react-native"' has no exported member 'SliderPropsIOS'.
+node_modules/@types/react-native/legacy-properties.d.ts(34,5): error TS2724: '"react-native"' has no exported member named 'SnapshotViewIOSProps'. Did you mean 'SnapshotViewIOSProperties'?
+node_modules/@types/react-native/legacy-properties.d.ts(38,5): error TS2724: '"react-native"' has no exported member named 'SwitchIOSProps'. Did you mean 'SwitchProps'?
+node_modules/@types/react-native/legacy-properties.d.ts(41,5): error TS2724: '"react-native"' has no exported member named 'TabBarIOSItemProps'. Did you mean 'TabBarIOSItemProperties'?
+node_modules/@types/react-native/legacy-properties.d.ts(42,5): error TS2305: Module '"react-native"' has no exported member 'TabBarIOSProps'.
+node_modules/@types/react-native/legacy-properties.d.ts(53,5): error TS2724: '"react-native"' has no exported member named 'ViewPagerAndroidProps'. Did you mean 'ViewPagerAndroidProperties'?
+node_modules/@types/react/global.d.ts(155,11): error TS2300: Duplicate identifier 'FormData'.
+node_modules/expo-modules-core/build/NativeViewManagerAdapter.d.ts(1,8): error TS1259: Module '"C:/Users/recep/OneDrive/Masa\u00FCst\u00FC/auto-champ-select/auto-champ-select/mobile/node_modules/@types/react/index"' can only be default-imported using the 'esModuleInterop' flag
+node_modules/react-native/src/types/globals.d.ts(10,1): error TS6200: Definitions of the following identifiers conflict with those in another file: EndingType, BlobPart, BufferSource, FormData, RequestInfo, XMLHttpRequestResponseType, AbortSignal, AbortController
+node_modules/react-native/src/types/globals.d.ts(10,1): error TS6200: Definitions of the following identifiers conflict with those in another file: FormDataValue, FormDataPart, BodyInit_, HeadersInit_, RequestCredentials_, RequestMode_, ResponseType_, WebsocketMessageEventListener, WebsocketErrorEventListener, WebsocketOpenEventListener, WebsocketCloseEventListener, WebsocketEventListener
+node_modules/react-native/src/types/globals.d.ts(46,9): error TS2451: Cannot redeclare block-scoped variable 'originalXMLHttpRequest'.
+node_modules/react-native/src/types/globals.d.ts(48,9): error TS2451: Cannot redeclare block-scoped variable '__BUNDLE_START_TIME__'.
+node_modules/react-native/src/types/globals.d.ts(49,9): error TS2451: Cannot redeclare block-scoped variable 'ErrorUtils'.
+node_modules/react-native/src/types/globals.d.ts(56,9): error TS2451: Cannot redeclare block-scoped variable '__DEV__'.
+node_modules/react-native/src/types/globals.d.ts(58,9): error TS2451: Cannot redeclare block-scoped variable 'HermesInternal'.
+node_modules/react-native/src/types/globals.d.ts(166,7): error TS2403: Subsequent variable declarations must have the same type.  Variable 'Blob' must be of type '{ new (blobParts?: BlobPart[], options?: BlobPropertyBag): Blob; prototype: Blob; }', but here has type '{ new (blobParts?: (string | Blob)[], options?: BlobOptions): Blob; prototype: Blob; }'.
+node_modules/react-native/src/types/globals.d.ts(180,7): error TS2403: Subsequent variable declarations must have the same type.  Variable 'File' must be of type '{ new (fileBits: BlobPart[], fileName: string, options?: FilePropertyBag): File; prototype: File; }', but here has type '{ new (fileParts: BlobPart[], name: string, options?: FilePropertyBag): File; prototype: File; }'.
+node_modules/react-native/src/types/globals.d.ts(266,5): error TS2717: Subsequent property declarations must have the same type.  Property 'body' must be of type 'BodyInit', but here has type 'BodyInit_'.
+node_modules/react-native/src/types/globals.d.ts(275,5): error TS2717: Subsequent property declarations must have the same type.  Property 'signal' must be of type 'AbortSignal', but here has type 'AbortSignal'.
+node_modules/react-native/src/types/globals.d.ts(285,14): error TS2717: Subsequent property declarations must have the same type.  Property 'signal' must be of type 'AbortSignal', but here has type 'AbortSignal'.
+node_modules/react-native/src/types/globals.d.ts(289,7): error TS2403: Subsequent variable declarations must have the same type.  Variable 'Request' must be of type '{ new (input: RequestInfo | URL, init?: RequestInit): Request; prototype: Request; }', but here has type '{ new (input: string | Request, init?: RequestInit): Request; prototype: Request; }'.
+node_modules/react-native/src/types/globals.d.ts(313,7): error TS2403: Subsequent variable declarations must have the same type.  Variable 'Response' must be of type '{ new (body?: BodyInit, init?: ResponseInit): Response; prototype: Response; error(): Response; json(data: any, init?: ResponseInit): Response; redirect(url: string | URL, status?: number): Response; }', but here has type '{ new (body?: BodyInit_, init?: ResponseInit): Response; prototype: Response; error(): Response; json(data: any, init?: ResponseInit): Response; redirect: (url: string | URL, status?: number) => Response; }'.
+node_modules/react-native/src/types/globals.d.ts(398,5): error TS2717: Subsequent property declarations must have the same type.  Property 'abort' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/react-native/src/types/globals.d.ts(399,5): error TS2717: Subsequent property declarations must have the same type.  Property 'error' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/react-native/src/types/globals.d.ts(400,5): error TS2717: Subsequent property declarations must have the same type.  Property 'load' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/react-native/src/types/globals.d.ts(401,5): error TS2717: Subsequent property declarations must have the same type.  Property 'loadend' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/react-native/src/types/globals.d.ts(402,5): error TS2717: Subsequent property declarations must have the same type.  Property 'loadstart' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/react-native/src/types/globals.d.ts(403,5): error TS2717: Subsequent property declarations must have the same type.  Property 'progress' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/react-native/src/types/globals.d.ts(404,5): error TS2717: Subsequent property declarations must have the same type.  Property 'timeout' must be of type 'ProgressEvent<XMLHttpRequestEventTarget>', but here has type 'ProgressEvent<EventTarget>'.
+node_modules/react-native/src/types/globals.d.ts(471,7): error TS2403: Subsequent variable declarations must have the same type.  Variable 'URL' must be of type '{ new (url: string | URL, base?: string | URL): URL; prototype: URL; canParse(url: string | URL, base?: string | URL): boolean; createObjectURL(obj: Blob | MediaSource): string; parse(url: string | URL, base?: string | URL): URL; revokeObjectURL(url: string): void; }', but here has type '{ new (url: string | URL, base?: string | URL): URL; prototype: URL; createObjectURL(obj: Blob): string; revokeObjectURL(url: string): void; }'.
+node_modules/react-native/src/types/globals.d.ts(534,5): error TS2717: Subsequent property declarations must have the same type.  Property 'onopen' must be of type '(this: WebSocket, ev: Event) => any', but here has type '() => void'.
+node_modules/react-native/src/types/globals.d.ts(535,5): error TS2717: Subsequent property declarations must have the same type.  Property 'onmessage' must be of type '(this: WebSocket, ev: MessageEvent<any>) => any', but here has type '(event: WebSocketMessageEvent) => void'.
+node_modules/react-native/src/types/globals.d.ts(536,5): error TS2717: Subsequent property declarations must have the same type.  Property 'onerror' must be of type '(this: WebSocket, ev: Event) => any', but here has type '(event: WebSocketErrorEvent) => void'.
+node_modules/react-native/src/types/globals.d.ts(537,5): error TS2717: Subsequent property declarations must have the same type.  Property 'onclose' must be of type '(this: WebSocket, ev: CloseEvent) => any', but here has type '(event: WebSocketCloseEvent) => void'.
+node_modules/react-native/src/types/globals.d.ts(538,5): error TS2717: Subsequent property declarations must have the same type.  Property 'addEventListener' must be of type '{ <K extends keyof WebSocketEventMap>(type: K, listener: (this: WebSocket, ev: WebSocketEventMap[K]) => any, options?: boolean | AddEventListenerOptions): void; (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void; }', but here has type 'WebsocketEventListener'.
+node_modules/react-native/src/types/globals.d.ts(539,5): error TS2717: Subsequent property declarations must have the same type.  Property 'removeEventListener' must be of type '{ <K extends keyof WebSocketEventMap>(type: K, listener: (this: WebSocket, ev: WebSocketEventMap[K]) => any, options?: boolean | EventListenerOptions): void; (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void; }', but here has type 'WebsocketEventListener'.
+node_modules/react-native/src/types/globals.d.ts(542,7): error TS2403: Subsequent variable declarations must have the same type.  Variable 'WebSocket' must be of type '{ new (url: string | URL, protocols?: string | string[]): WebSocket; prototype: WebSocket; readonly CONNECTING: 0; readonly OPEN: 1; readonly CLOSING: 2; readonly CLOSED: 3; }', but here has type '{ new (uri: string, protocols?: string | string[], options?: { [optionName: string]: any; headers: { [headerName: string]: string; }; }): WebSocket; prototype: WebSocket; readonly CLOSED: number; readonly CLOSING: number; readonly CONNECTING: number; readonly OPEN: number; }'.
+node_modules/react-native/src/types/globals.d.ts(627,14): error TS2717: Subsequent property declarations must have the same type.  Property 'error' must be of type 'DOMException', but here has type 'Error'.
+node_modules/react-native/src/types/globals.d.ts(640,14): error TS2717: Subsequent property declarations must have the same type.  Property 'readyState' must be of type '0 | 2 | 1', but here has type 'number'.
+node_modules/react-native/types/modules/BatchedBridge.d.ts(17,15): error TS2300: Duplicate identifier 'MessageQueue'.
+node_modules/react-native/types/modules/BatchedBridge.d.ts(27,18): error TS2300: Duplicate identifier 'BatchedBridge'.
+node_modules/react-native/types/modules/BatchedBridge.d.ts(31,18): error TS2300: Duplicate identifier 'MessageQueue'.
+node_modules/react-native/types/modules/Codegen.d.ts(10,1): error TS6200: Definitions of the following identifiers conflict with those in another file: codegenNativeCommands, NativeComponentType, codegenNativeComponent, BubblingEventHandler, DirectEventHandler, Double, Float, Int32, UnsafeObject, DefaultTypes, WithDefault
+node_modules/react-native/types/modules/Devtools.d.ts(11,15): error TS2300: Duplicate identifier 'StackFrame'.
+node_modules/react-native/types/public/DeprecatedPropertiesAlias.d.ts(10,1): error TS6200: Definitions of the following identifiers conflict with those in another file: TextProperties, TextPropertiesIOS, TextPropertiesAndroid, AccessibilityProperties, AccessibilityPropertiesIOS, AccessibilityPropertiesAndroid, TextInputProperties, TextInputIOSProperties, TextInputAndroidProperties, ViewProperties, ViewPropertiesIOS, ViewPropertiesAndroid, ScrollViewProperties, ScrollViewPropertiesIOS, ScrollViewPropertiesAndroid, InputAccessoryViewProperties, ActivityIndicatorProperties, ActivityIndicatorIOSProperties, DrawerLayoutAndroidProperties, ProgressBarAndroidProperties, RefreshControlProperties, RefreshControlPropertiesIOS, RefreshControlPropertiesAndroid, ImagePropertiesSourceOptions, ImageProperties, ImagePropertiesIOS, ImagePropertiesAndroid, ImageBackgroundProperties, FlatListProperties, VirtualizedListProperties, SectionListProperties, ModalProperties, TouchableWithoutFeedbackProperties, TouchableHighlightProperties, TouchableOpacityProperties, TouchableNativeFeedbackProperties, ButtonProperties, StatusBarProperties, StatusBarPropertiesIOS, StatusBarPropertiesAndroid, SwitchProperties, SwitchPropertiesIOS
+node_modules/typescript/lib/lib.dom.d.ts(23,1): error TS6200: Definitions of the following identifiers conflict with those in another file: EndingType, BlobPart, BufferSource, FormData, RequestInfo, XMLHttpRequestResponseType, AbortSignal, AbortController
+node_modules/typescript/lib/lib.dom.d.ts(2717,11): error TS2300: Duplicate identifier 'AbortController'.
+node_modules/typescript/lib/lib.dom.d.ts(2732,13): error TS2300: Duplicate identifier 'AbortController'.
+node_modules/typescript/lib/lib.dom.d.ts(2746,11): error TS2300: Duplicate identifier 'AbortSignal'.
+node_modules/typescript/lib/lib.dom.d.ts(2773,13): error TS2300: Duplicate identifier 'AbortSignal'.
+node_modules/typescript/lib/lib.dom.d.ts(12219,11): error TS2300: Duplicate identifier 'FormData'.
+node_modules/typescript/lib/lib.dom.d.ts(12263,13): error TS2300: Duplicate identifier 'FormData'.
+node_modules/typescript/lib/lib.dom.d.ts(32640,11): error TS2300: Duplicate identifier 'URL'.
+node_modules/typescript/lib/lib.dom.d.ts(32640,11): error TS2430: Interface 'URL' incorrectly extends interface 'import("url").URL'.
+  The types returned by 'searchParams[Symbol.iterator]()' are incompatible between these types.
+    Property '[Symbol.dispose]' is missing in type 'IterableIterator<[string, string]>' but required in type 'URLSearchParamsIterator<[string, string]>'.
+node_modules/typescript/lib/lib.dom.d.ts(32722,13): error TS2300: Duplicate identifier 'URL'.
+node_modules/typescript/lib/lib.dom.d.ts(32759,11): error TS2300: Duplicate identifier 'URLSearchParams'.
+node_modules/typescript/lib/lib.dom.d.ts(32759,11): error TS2430: Interface 'URLSearchParams' incorrectly extends interface 'import("url").URLSearchParams'.
+  Types of property 'forEach' are incompatible.
+    Type '(callbackfn: (value: string, key: string, parent: URLSearchParams) => void, thisArg?: any) => void' is not assignable to type '<TThis = this>(fn: (this: TThis, value: string, name: string, searchParams: URLSearchParams) => void, thisArg?: TThis) => void'.
+      Types of parameters 'callbackfn' and 'fn' are incompatible.
+        Types of parameters 'searchParams' and 'parent' are incompatible.
+          Type 'URLSearchParams' is not assignable to type 'import("url").URLSearchParams'.
+            The types returned by '[Symbol.iterator]()' are incompatible between these types.
+              Property '[Symbol.dispose]' is missing in type 'IterableIterator<[string, string]>' but required in type 'URLSearchParamsIterator<[string, string]>'.
+node_modules/typescript/lib/lib.dom.d.ts(32812,13): error TS2300: Duplicate identifier 'URLSearchParams'.
+node_modules/typescript/lib/lib.dom.d.ts(39228,6): error TS2300: Duplicate identifier 'RequestInfo'.
+node_modules/typescript/lib/lib.dom.d.ts(39429,6): error TS2300: Duplicate identifier 'XMLHttpRequestResponseType'.
+src/components/SettingsPanel.tsx(1,8): error TS1259: Module '"C:/Users/recep/OneDrive/Masa\u00FCst\u00FC/auto-champ-select/auto-champ-select/mobile/node_modules/@types/react/index"' can only be default-imported using the 'esModuleInterop' flag
+src/components/SettingsPanel.tsx(22,26): error TS6142: Module './ChampionGrid' was resolved to 'C:/Users/recep/OneDrive/Masa├╝st├╝/auto-champ-select/auto-champ-select/mobile/src/components/ChampionGrid.tsx', but '--jsx' is not set.
+src/components/SettingsPanel.tsx(184,17): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(185,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(192,13): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(194,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(196,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(197,25): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(207,9): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(208,13): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(209,17): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(210,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(212,25): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(213,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(214,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(215,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(219,25): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(221,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(222,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(223,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(226,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(227,37): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(228,37): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(235,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(236,37): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(237,37): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(244,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(245,37): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(246,37): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(255,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(257,41): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(257,47): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(props: ViewProps): View', gave the following error.
+    Type '{ key: Lane; style: { width: "47%"; backgroundColor: string; borderRadius: number; padding: number; borderWidth: number; borderColor: string; }; }' is not assignable to type 'ViewProps'.
+      Property 'key' does not exist on type 'ViewProps'.
+  Overload 2 of 2, '(props: ViewProps, context: any): View', gave the following error.
+    Type '{ key: Lane; style: { width: "47%"; backgroundColor: string; borderRadius: number; padding: number; borderWidth: number; borderColor: string; }; }' is not assignable to type 'ViewProps'.
+      Property 'key' does not exist on type 'ViewProps'.
+src/components/SettingsPanel.tsx(258,45): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(259,49): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(260,49): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(262,45): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(266,57): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(266,63): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(props: ViewProps): View', gave the following error.
+    Type '{ key: number; }' is not assignable to type 'ViewProps'.
+      Property 'key' does not exist on type 'ViewProps'.
+  Overload 2 of 2, '(props: ViewProps, context: any): View', gave the following error.
+    Type '{ key: number; }' is not assignable to type 'ViewProps'.
+      Property 'key' does not exist on type 'ViewProps'.
+src/components/SettingsPanel.tsx(282,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(283,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(284,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(287,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(288,37): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(289,37): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(298,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(302,45): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(302,51): error TS2769: No overload matches this call.
+  Overload 1 of 2, '(props: ViewProps): View', gave the following error.
+    Type '{ key: number; }' is not assignable to type 'ViewProps'.
+      Property 'key' does not exist on type 'ViewProps'.
+  Overload 2 of 2, '(props: ViewProps, context: any): View', gave the following error.
+    Type '{ key: number; }' is not assignable to type 'ViewProps'.
+      Property 'key' does not exist on type 'ViewProps'.
+src/components/SettingsPanel.tsx(319,13): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(325,17): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(326,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(327,25): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(328,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(333,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(334,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(338,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(339,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(340,33): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/components/SettingsPanel.tsx(343,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/lib/lcuBridge.ts(80,53): error TS2802: Type 'MapIterator<[number, { resolve: (result: LCUResult) => void; reject: (error: Error) => void; }]>' can only be iterated through when using the '--downlevelIteration' flag or with a '--target' of 'es2015' or higher.
+src/screens/Dashboard.tsx(1,8): error TS1259: Module '"C:/Users/recep/OneDrive/Masa\u00FCst\u00FC/auto-champ-select/auto-champ-select/mobile/node_modules/@types/react/index"' can only be default-imported using the 'esModuleInterop' flag
+src/screens/Dashboard.tsx(7,27): error TS6142: Module '../components/SettingsPanel' was resolved to 'C:/Users/recep/OneDrive/Masa├╝st├╝/auto-champ-select/auto-champ-select/mobile/src/components/SettingsPanel.tsx', but '--jsx' is not set.
+src/screens/Dashboard.tsx(45,9): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(46,13): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(47,17): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(48,17): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(49,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(50,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(51,25): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(55,29): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(57,25): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(63,17): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(64,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(65,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(68,17): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(69,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(75,25): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(77,21): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(82,25): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.
+src/screens/Dashboard.tsx(87,13): error TS17004: Cannot use JSX unless the '--jsx' flag is provided.

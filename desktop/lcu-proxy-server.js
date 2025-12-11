@@ -9,6 +9,20 @@ import path from 'path';
 import { homedir } from 'os';
 
 const PROXY_PORT = 21337; // Local proxy port
+// Track unique endpoints the official client hits (method + path)
+const ENDPOINT_LOG_PATH = path.join(process.cwd(), 'lcu-endpoints.log');
+const seenEndpoints = new Set();
+// Focused log for quickplay-related calls (paths containing quick/slot/tam)
+const QUICKPLAY_LOG_PATH = path.join(process.cwd(), 'lcu-quickplay.log');
+
+function logQuickplay(details) {
+  const line = `[${new Date().toISOString()}] ${JSON.stringify(details)}\n`;
+  fs.appendFile(QUICKPLAY_LOG_PATH, line, (err) => {
+    if (err) {
+      console.error('[Proxy] Failed to write quickplay log:', err.message);
+    }
+  });
+}
 
 // Store LCU config (will be set by first request or auto-discovered)
 let lcuConfig = null;
@@ -96,6 +110,7 @@ function watchForLeagueClient() {
       const config = discoverLcuConfig();
       if (config) {
         // Verify the connection actually works before reporting as connected
+        console.log("DEBUG -", config)
         const isAlive = await verifyLcuConnection(config);
         if (isAlive) {
           lcuConfig = config;
@@ -237,6 +252,20 @@ const server = http.createServer(async (req, res) => {
 
   const token = Buffer.from(`riot:${lcuConfig.password}`).toString('base64');
 
+  // Record each unique endpoint (method + path) the official client hits
+  const endpointKey = `${lcuMethod} ${lcuPath}`;
+  if (!seenEndpoints.has(endpointKey)) {
+    seenEndpoints.add(endpointKey);
+    const logLine = `[${new Date().toISOString()}] ${endpointKey}\n`;
+    fs.appendFile(ENDPOINT_LOG_PATH, logLine, (err) => {
+      if (err) {
+        console.error('[Proxy] Failed to write endpoint log:', err.message);
+      } else {
+        console.log('[Proxy][Endpoint]', endpointKey, '(logged)');
+      }
+    });
+  }
+
   // Base headers - Authorization is always needed
   const options = {
     hostname: '127.0.0.1',
@@ -254,6 +283,13 @@ const server = http.createServer(async (req, res) => {
   req.on('data', chunk => { requestBody += chunk.toString(); });
 
   req.on('end', () => {
+    // Identify quickplay-ish calls (path or payload or query hints)
+    const quickplayHint = /quick|slot|tam|pickable|pick|position/i;
+    const queueHint = /queueId["']?\s*:\s*49\d/i;
+    const isQuickplayPath = quickplayHint.test(lcuPath) || quickplayHint.test(url.search || '');
+    const isQuickplayBody = quickplayHint.test(requestBody) || queueHint.test(requestBody);
+    const isQuickplay = isQuickplayPath || isQuickplayBody;
+
     // Only set Content-Type and Content-Length if there's actually a body
     // Mimic's C# code sets Content = null when body is null, not an empty string
     if (requestBody && requestBody.length > 0) {
@@ -269,13 +305,24 @@ const server = http.createServer(async (req, res) => {
         'Content-Type': proxyRes.headers['content-type'] || 'application/json',
         'Access-Control-Allow-Origin': '*'
       });
-
+      
       proxyRes.on('data', (chunk) => {
         responseBody += chunk.toString();
         res.write(chunk);
       });
 
       proxyRes.on('end', () => {
+        if (isQuickplay) {
+          const entry = {
+            method: lcuMethod,
+            path: lcuPath + (url.search || ''),
+            status: proxyRes.statusCode,
+            requestBody: requestBody ? requestBody.substring(0, 2000) : undefined,
+            responseBody: responseBody ? responseBody.substring(0, 2000) : undefined,
+          };
+          logQuickplay(entry);
+          console.log('[Proxy][Quickplay]', entry);
+        }
         // Check if this is an expected error (not a real failure)
         const isExpectedError = proxyRes.statusCode === 404 && (
           responseBody.includes('No matchmaking search exists') ||
@@ -301,6 +348,14 @@ const server = http.createServer(async (req, res) => {
 
     proxyReq.on('error', (error) => {
       console.error(`[Proxy] Request error for ${lcuMethod} ${lcuPath}:`, error.message);
+      if (isQuickplayPath) {
+        logQuickplay({
+          method: lcuMethod,
+          path: lcuPath + (url.search || ''),
+          error: error.message,
+          requestBody: requestBody ? requestBody.substring(0, 2000) : undefined,
+        });
+      }
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: error.message }));
     });

@@ -7,6 +7,9 @@ export interface FavoriteChampionConfig {
     autoHover: boolean;
     autoLock: boolean;
     allowFillFallback: boolean;
+    // Ban favorites
+    favoriteBans: number[];      // list of champion IDs for bans (max 5)
+    autoBanHover: boolean;       // toggle for auto-hover during ban phase
 }
 
 const STORAGE_KEY = 'favorite-champions';
@@ -21,6 +24,8 @@ export const defaultFavoriteConfig: FavoriteChampionConfig = {
     autoHover: true,
     autoLock: false,
     allowFillFallback: true,
+    favoriteBans: [],
+    autoBanHover: true,
 };
 
 export const normalizeLane = (lane?: string | null): Lane => {
@@ -46,6 +51,15 @@ const sanitizePreferences = (prefs: Record<Lane, number[]>, maxPerLane = 3): Rec
     return safe;
 };
 
+const sanitizeBans = (bans: number[], maxBans = 5): number[] => {
+    const uniq: number[] = [];
+    (bans || []).forEach((id) => {
+        if (!id || id <= 0) return;
+        if (!uniq.includes(id)) uniq.push(id);
+    });
+    return uniq.slice(0, maxBans);
+};
+
 export const loadFavoriteChampionConfig = async (): Promise<FavoriteChampionConfig> => {
     try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -58,6 +72,8 @@ export const loadFavoriteChampionConfig = async (): Promise<FavoriteChampionConf
             autoHover: parsed.autoHover ?? defaultFavoriteConfig.autoHover,
             autoLock: parsed.autoLock ?? defaultFavoriteConfig.autoLock,
             allowFillFallback: parsed.allowFillFallback ?? defaultFavoriteConfig.allowFillFallback,
+            favoriteBans: sanitizeBans(parsed.favoriteBans || []),
+            autoBanHover: parsed.autoBanHover ?? defaultFavoriteConfig.autoBanHover,
         };
     } catch (error) {
         console.warn('[favorites] Failed to load favorites from storage', error);
@@ -72,6 +88,8 @@ export const saveFavoriteChampionConfig = async (config: FavoriteChampionConfig)
             autoHover: !!config.autoHover,
             autoLock: !!config.autoLock,
             allowFillFallback: !!config.allowFillFallback,
+            favoriteBans: sanitizeBans(config.favoriteBans || []),
+            autoBanHover: !!config.autoBanHover,
         };
         await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch (error) {
@@ -97,3 +115,18 @@ export const updateLanePreference = (
     return { ...config, preferences };
 };
 
+export const updateBanPreference = (
+    config: FavoriteChampionConfig,
+    championId: number
+): FavoriteChampionConfig => {
+    const banList = [...(config.favoriteBans || [])];
+    const existingIndex = banList.indexOf(championId);
+    if (existingIndex !== -1) {
+        // Remove if already in list
+        banList.splice(existingIndex, 1);
+    } else if (championId > 0) {
+        // Add to front of list
+        banList.unshift(championId);
+    }
+    return { ...config, favoriteBans: banList.slice(0, 5) };
+};

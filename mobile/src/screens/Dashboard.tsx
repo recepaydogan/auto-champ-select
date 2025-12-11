@@ -1,29 +1,33 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, ImageBackground, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Session } from '@supabase/supabase-js';
 import { DesktopStatus } from '../lib/lcuBridge';
+import { FavoriteChampionConfig } from '../lib/favoriteChampions';
+import SettingsPanel from '../components/SettingsPanel';
 
 interface DashboardProps {
     session: Session;
     desktopStatus: DesktopStatus;
     onCreateLobby: () => void;
     onSignOut: () => void;
+    favoriteConfig: FavoriteChampionConfig;
+    onSaveFavoriteConfig: (config: FavoriteChampionConfig) => void;
 }
 
-const BG_URI = 'https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-parties/global/default/assets/static_queue_delay_bg.jpg';
+const BG_IMAGE = require('../../static/magic-background.jpg');
 const GOLD = '#c7b37b';
 const OFFWHITE = '#e8e2cf';
 
-export default function Dashboard({ desktopStatus, onCreateLobby, onSignOut }: DashboardProps) {
-    const [clock, setClock] = useState(() => new Date());
+export default function Dashboard({
+    desktopStatus,
+    onCreateLobby,
+    onSignOut,
+    favoriteConfig,
+    onSaveFavoriteConfig,
+}: DashboardProps) {
+    const [showSettings, setShowSettings] = useState(false);
 
-    useEffect(() => {
-        const id = setInterval(() => setClock(new Date()), 1000);
-        return () => clearInterval(id);
-    }, []);
-
-    const timeStr = clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const connected = !!desktopStatus?.lcuConnected;
     const headlineText = connected ? 'YOU\'RE ALL SET!' : 'OPEN LEAGUE CLIENT';
     const subheadText = connected
@@ -31,54 +35,70 @@ export default function Dashboard({ desktopStatus, onCreateLobby, onSignOut }: D
         : 'Open the League client on your desktop to create or join a lobby.';
 
     return (
-        <SafeAreaView style={styles.safeArea}>
-            <ImageBackground source={{ uri: BG_URI }} style={styles.bg} resizeMode="cover">
-                <View style={styles.overlay} />
-                <View style={styles.topRow}>
-                    <Text style={styles.time}>{timeStr}</Text>
-                    <Text style={[styles.status, connected ? styles.statusOk : styles.statusWarn]}>
-                        {connected ? 'Connected' : 'Waiting for client'}
-                    </Text>
-                </View>
+        <ImageBackground source={BG_IMAGE} style={styles.bg} resizeMode="cover">
+            <View style={styles.overlay} />
+            <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+                <View style={styles.container}>
+                    <View style={styles.topRow}>
+                        <TouchableOpacity
+                            style={styles.settingsButton}
+                            onPress={() => setShowSettings(true)}
+                        >
+                            <Text style={styles.settingsIcon}>⚙️</Text>
+                        </TouchableOpacity>
+                        <Text style={[styles.status, connected ? styles.statusOk : styles.statusWarn]}>
+                            {connected ? 'Connected' : 'Waiting for client'}
+                        </Text>
+                    </View>
 
-                <View style={styles.center}>
-                    <Text style={styles.headline}>{headlineText}</Text>
-                    <Text style={styles.subhead}>{subheadText}</Text>
-                </View>
+                    <View style={styles.center}>
+                        <Text style={styles.headline}>{headlineText}</Text>
+                        <Text style={styles.subhead}>{subheadText}</Text>
+                    </View>
 
-                <View style={styles.footer}>
-                    <TouchableOpacity
-                        style={[styles.primaryButton, !connected && styles.disabledButton]}
-                        activeOpacity={0.9}
-                        disabled={!connected}
-                        onPress={onCreateLobby}
-                    >
-                        <Text style={styles.primaryLabel}>CREATE NEW LOBBY</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={styles.secondaryButton}
-                        activeOpacity={0.85}
-                        onPress={onSignOut}
-                    >
-                        <Text style={styles.secondaryLabel}>Sign Out</Text>
-                    </TouchableOpacity>
+                    <View style={styles.footer}>
+                        <TouchableOpacity
+                            style={[styles.primaryButton, !connected && styles.disabledButton]}
+                            activeOpacity={0.9}
+                            disabled={!connected}
+                            onPress={onCreateLobby}
+                        >
+                            <Text style={styles.primaryLabel}>CREATE NEW LOBBY</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.secondaryButton}
+                            activeOpacity={0.85}
+                            onPress={onSignOut}
+                        >
+                            <Text style={styles.secondaryLabel}>Sign Out</Text>
+                        </TouchableOpacity>
+                    </View>
                 </View>
-            </ImageBackground>
-        </SafeAreaView>
+            </SafeAreaView>
+
+            <SettingsPanel
+                visible={showSettings}
+                onClose={() => setShowSettings(false)}
+                favoriteConfig={favoriteConfig}
+                onSaveFavoriteConfig={onSaveFavoriteConfig}
+            />
+        </ImageBackground>
     );
 }
 
 const styles = StyleSheet.create({
-    safeArea: {
-        flex: 1,
-        backgroundColor: '#0a1a24',
-    },
     bg: {
         flex: 1,
     },
     overlay: {
         ...StyleSheet.absoluteFillObject,
         backgroundColor: 'rgba(0, 12, 20, 0.55)',
+    },
+    safeArea: {
+        flex: 1,
+    },
+    container: {
+        flex: 1,
     },
     topRow: {
         flexDirection: 'row',
@@ -87,10 +107,16 @@ const styles = StyleSheet.create({
         paddingHorizontal: 20,
         paddingTop: 12,
     },
-    time: {
-        color: OFFWHITE,
-        fontSize: 16,
-        fontWeight: '700',
+    settingsButton: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: 'rgba(0, 0, 0, 0.4)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    settingsIcon: {
+        fontSize: 20,
     },
     status: {
         fontSize: 12,

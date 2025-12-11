@@ -26,6 +26,7 @@ interface CreateLobbyScreenProps {
     onClose: () => void;
     onSuccess: () => void;
     onError?: (message: string) => void;
+    onLeaveLobby?: () => void;
 }
 
 const GOLD = '#c7b37b';
@@ -79,7 +80,7 @@ const isShamataQueue = (q: GameQueue): boolean => {
 
 let cachedQueues: GameQueue[] | null = null;
 
-export default function CreateLobbyScreen({ onClose, onSuccess, onError }: CreateLobbyScreenProps) {
+export default function CreateLobbyScreen({ onClose, onSuccess, onError, onLeaveLobby }: CreateLobbyScreenProps) {
     const lcuBridge = getLCUBridge();
 
     const [queues, setQueues] = useState<GameQueue[]>([]);
@@ -526,13 +527,21 @@ export default function CreateLobbyScreen({ onClose, onSuccess, onError }: Creat
                     )}
 
                     <View style={styles.footer}>
-                        <Button
-                            title={creating ? 'Creating...' : 'Confirm'}
+                        {onLeaveLobby && (
+                            <TouchableOpacity
+                                style={styles.actionButton}
+                                onPress={onLeaveLobby}
+                            >
+                                <Text style={styles.actionButtonText}>LEAVE LOBBY</Text>
+                            </TouchableOpacity>
+                        )}
+                        <TouchableOpacity
+                            style={[styles.actionButton, (!selectedQueueId || creating || loading) && styles.actionButtonDisabled]}
                             onPress={handleCreateLobby}
                             disabled={!selectedQueueId || creating || loading}
-                            buttonStyle={styles.confirmButton}
-                            titleStyle={styles.confirmText}
-                        />
+                        >
+                            <Text style={styles.actionButtonText}>{creating ? 'CREATING...' : 'CONFIRM'}</Text>
+                        </TouchableOpacity>
                     </View>
                 </View>
             </ImageBackground>
@@ -651,20 +660,28 @@ const styles = StyleSheet.create({
         paddingVertical: 12
     },
     footer: {
-        marginTop: 6
+        marginTop: 6,
+        gap: 10,
     },
-    confirmButton: {
-        backgroundColor: 'rgba(8,13,18,0.9)',
+    actionButton: {
+        backgroundColor: 'rgba(30, 35, 40, 0.9)',
+        borderWidth: 2,
         borderColor: GOLD,
-        borderWidth: 1.5,
-        borderRadius: 12,
-        paddingVertical: 14
+        paddingVertical: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
-    confirmText: {
-        color: OFFWHITE,
+    actionButtonDisabled: {
+        opacity: 0.5,
+        borderColor: '#6b7280',
+    },
+    actionButtonText: {
+        color: GOLD,
+        fontSize: 18,
         fontWeight: '800',
-        fontSize: 16,
-        letterSpacing: 0.6
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+        fontFamily: 'serif',
     },
     loadingContainer: {
         flex: 1,

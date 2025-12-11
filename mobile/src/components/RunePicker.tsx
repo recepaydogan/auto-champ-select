@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, Image } from 'react-native';
 import { Button, Icon } from '@rneui/themed';
 
 interface RunePage {
@@ -9,6 +9,7 @@ interface RunePage {
     isActive: boolean;
     primaryStyleId: number;
     subStyleId: number;
+    selectedPerkIds?: number[];
 }
 
 interface RunePickerProps {
@@ -17,9 +18,54 @@ interface RunePickerProps {
     onClose: () => void;
     pages: RunePage[];
     currentPageId?: number;
+    perkStyles?: any[];
+    runeIconMap?: Record<number, string>;
+    normalizeRuneIcon?: (path: string | undefined, id?: number) => string;
 }
 
-export default function RunePicker({ visible, onSelect, onClose, pages, currentPageId }: RunePickerProps) {
+export default function RunePicker({
+    visible,
+    onSelect,
+    onClose,
+    pages,
+    currentPageId,
+    perkStyles,
+    runeIconMap,
+    normalizeRuneIcon
+}: RunePickerProps) {
+    const findStyleIcon = (styleId?: number | null) => {
+        if (!styleId || !perkStyles?.length || !normalizeRuneIcon) return '';
+        const style = perkStyles.find((s: any) => s.id === styleId);
+        return normalizeRuneIcon(style?.iconPath);
+    };
+
+    const findPerkIcon = (perkId?: number) => {
+        if (!perkId) return '';
+        if (runeIconMap && normalizeRuneIcon && runeIconMap[perkId]) {
+            return normalizeRuneIcon(runeIconMap[perkId], perkId);
+        }
+        for (const style of perkStyles || []) {
+            for (const slot of style?.slots || []) {
+                for (const perk of slot?.perks || []) {
+                    const pid = typeof perk === 'number' ? perk : perk?.id;
+                    if (pid === perkId) {
+                        const iconPath = typeof perk === 'number' ? '' : perk?.iconPath;
+                        if (iconPath && normalizeRuneIcon) return normalizeRuneIcon(iconPath, perkId);
+                    }
+                }
+            }
+        }
+        return '';
+    };
+
+    const iconsForPage = (page: RunePage) => {
+        const primaryIcon = findStyleIcon(page.primaryStyleId);
+        const subIcon = findStyleIcon(page.subStyleId);
+        const keystoneId = Array.isArray(page.selectedPerkIds) ? page.selectedPerkIds[0] : undefined;
+        const keystoneIcon = findPerkIcon(keystoneId);
+        return { primaryIcon, subIcon, keystoneIcon };
+    };
+
     return (
         <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
             <View style={styles.overlay}>
@@ -36,6 +82,22 @@ export default function RunePicker({ visible, onSelect, onClose, pages, currentP
                                 onPress={() => onSelect(page.id)}
                             >
                                 <View style={styles.pageInfo}>
+                                    {(() => {
+                                        const icons = iconsForPage(page);
+                                        return (
+                                            <View style={styles.runeIconRow}>
+                                                {icons.primaryIcon ? (
+                                                    <Image source={{ uri: icons.primaryIcon }} style={styles.runeStyleIcon} />
+                                                ) : null}
+                                                {icons.subIcon ? (
+                                                    <Image source={{ uri: icons.subIcon }} style={styles.runeSubIcon} />
+                                                ) : null}
+                                                {icons.keystoneIcon ? (
+                                                    <Image source={{ uri: icons.keystoneIcon }} style={styles.runeKeystoneIcon} />
+                                                ) : null}
+                                            </View>
+                                        );
+                                    })()}
                                     <Text style={styles.pageName}>{page.name}</Text>
                                     <Text style={styles.pageType}>{page.isEditable ? 'Custom' : 'Preset'}</Text>
                                 </View>
@@ -94,6 +156,15 @@ const styles = StyleSheet.create({
     pageInfo: {
         flex: 1,
     },
+    runeIconRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        marginBottom: 6,
+    },
+    runeStyleIcon: { width: 28, height: 28, borderRadius: 14 },
+    runeSubIcon: { width: 22, height: 22, borderRadius: 11 },
+    runeKeystoneIcon: { width: 26, height: 26, borderRadius: 13 },
     pageName: {
         color: 'white',
         fontSize: 16,

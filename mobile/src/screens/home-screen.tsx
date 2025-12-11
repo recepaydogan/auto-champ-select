@@ -23,6 +23,7 @@ import {
     normalizeLane,
     saveFavoriteChampionConfig
 } from '../lib/favoriteChampions';
+import { scheduleMatchFoundNotification } from '../lib/notifications';
 
 const safeStringify = (value: any): string | null => {
     try {
@@ -740,6 +741,9 @@ export default function HomeScreen({ session }: { session: Session }) {
                 }
             }).catch(e => console.warn('[HomeScreen] Failed to fetch search on phase change', e));
         } else if (gamePhase === 'ReadyCheck') {
+            // Match found! Send notification
+            scheduleMatchFoundNotification();
+
             // Force fetch ready check data
             lcuBridge.request('/lol-matchmaking/v1/ready-check').then(result => {
                 if (result.status === 200 && result.content) {
@@ -1016,15 +1020,8 @@ export default function HomeScreen({ session }: { session: Session }) {
 
     const autoApplyFavoriteChampion = useCallback(async (cs: any) => {
         if (!cs) return;
-        if (!favoriteConfig.autoHover && !favoriteConfig.autoLock) return;
         if (!favoritesLoaded) return;
         if (!ensureConnected()) return;
-
-        // When ARAM offers an initial pool (2-3 champs), only pick from that pool.
-        const pickablePool = Array.isArray(cs.pickableChampionIds)
-            ? cs.pickableChampionIds.filter((id: any) => typeof id === 'number' && id > 0)
-            : [];
-        const pickableSet = pickablePool.length > 0 ? new Set<number>(pickablePool) : null;
 
         const localPlayerCellId = cs.localPlayerCellId;
         const myTeam = cs.myTeam || [];
@@ -1032,14 +1029,23 @@ export default function HomeScreen({ session }: { session: Session }) {
         const localPlayer = myTeam.find((m: any) => m.cellId === localPlayerCellId);
         if (!localPlayer) return;
 
-        const lane = resolvePreferredLane(cs);
-        const lanePrefs = favoriteConfig.preferences?.[lane] || [];
-        const fillPrefs = favoriteConfig.allowFillFallback && lane !== 'FILL'
-            ? (favoriteConfig.preferences?.FILL || [])
-            : [];
-        const candidates = [...lanePrefs, ...fillPrefs].filter((id, idx, arr) => id > 0 && arr.indexOf(id) === idx);
-        if (!candidates.length) return;
+        // Find current action for local player
+        const actions = cs.actions || [];
+        let currentAction: any = null;
+        for (const turn of actions) {
+            for (const action of turn) {
+                if (action.actorCellId === localPlayerCellId && !action.completed) {
+                    currentAction = action;
+                    break;
+                }
+            }
+            if (currentAction) break;
+        }
+        if (!currentAction) return;
 
+        const actionType = (currentAction.type || '').toLowerCase();
+
+        // Collect all banned champions
         const banned = new Set<number>();
         const addIfValid = (id?: number) => {
             if (typeof id === 'number' && id > 0) banned.add(id);
@@ -1059,6 +1065,7 @@ export default function HomeScreen({ session }: { session: Session }) {
             });
         });
 
+        // Collect all picked champions
         const picked = new Set<number>();
         [...myTeam, ...theirTeam].forEach((member: any) => {
             if (typeof member?.championId === 'number' && member.championId > 0) {
@@ -1066,27 +1073,64 @@ export default function HomeScreen({ session }: { session: Session }) {
             }
         });
 
+        // Handle BAN phase
+        if (actionType === 'ban') {
+            if (!favoriteConfig.autoBanHover) return;
+            if (!favoriteConfig.favoriteBans?.length) return;
+
+            // Find first available ban from favorites
+            const banChoice = favoriteConfig.favoriteBans.find((id) => !banned.has(id));
+            if (!banChoice) return;
+
+            // Check if already hovering this champion
+            if (currentAction.championId === banChoice) return;
+
+            // Track state to prevent re-applying
+            const state = autoPickStateRef.current;
+            if (state.lastActionId !== currentAction.id) {
+                state.lastActionId = currentAction.id;
+                state.manualOverride = false;
+                state.lastAppliedChampionId = undefined;
+            }
+
+            // Check for manual override
+            if (currentAction.championId && currentAction.championId !== state.lastAppliedChampionId) {
+                state.manualOverride = true;
+            }
+            if (state.manualOverride) return;
+
+            try {
+                // Only hover, do NOT lock (no completed: true)
+                await lcuBridge.request(`/lol-champ-select/v1/session/actions/${currentAction.id}`, 'PATCH', {
+                    championId: banChoice
+                });
+                state.lastAppliedChampionId = banChoice;
+            } catch (error: any) {
+                console.warn('[HomeScreen] Auto-ban hover failed', error?.message || error);
+            }
+            return;
+        }
+
+        // Handle PICK phase (existing logic)
+        if (!favoriteConfig.autoHover && !favoriteConfig.autoLock) return;
+
+        // When ARAM offers an initial pool (2-3 champs), only pick from that pool.
+        const pickablePool = Array.isArray(cs.pickableChampionIds)
+            ? cs.pickableChampionIds.filter((id: any) => typeof id === 'number' && id > 0)
+            : [];
+        const pickableSet = pickablePool.length > 0 ? new Set<number>(pickablePool) : null;
+
+        const lane = resolvePreferredLane(cs);
+        const lanePrefs = favoriteConfig.preferences?.[lane] || [];
+        const fillPrefs = favoriteConfig.allowFillFallback && lane !== 'FILL'
+            ? (favoriteConfig.preferences?.FILL || [])
+            : [];
+        const candidates = [...lanePrefs, ...fillPrefs].filter((id, idx, arr) => id > 0 && arr.indexOf(id) === idx);
+        if (!candidates.length) return;
+
         const blocked = new Set<number>([...banned, ...picked]);
         const choice = candidates.find((id) => !blocked.has(id) && (!pickableSet || pickableSet.has(id)));
         if (!choice) return;
-
-        const actions = cs.actions || [];
-        let currentAction: any = null;
-        for (const turn of actions) {
-            for (const action of turn) {
-                if (action.actorCellId === localPlayerCellId && !action.completed) {
-                    currentAction = action;
-                    break;
-                }
-            }
-            if (currentAction) break;
-        }
-        if (!currentAction) return;
-
-        const actionType = (currentAction.type || '').toLowerCase();
-        if (actionType === 'ban') {
-            return; // do not auto-ban yet
-        }
 
         const state = autoPickStateRef.current;
         if (state.lastActionId !== currentAction.id) {
@@ -1369,6 +1413,7 @@ export default function HomeScreen({ session }: { session: Session }) {
                     onClose={() => setShowCreateLobby(false)}
                     onSuccess={handleCreateLobbySuccess}
                     onError={(message) => showAlert('Error', message, undefined, 'error')}
+                    onLeaveLobby={handleLeaveLobby}
                 />
             );
         }
@@ -1501,6 +1546,8 @@ export default function HomeScreen({ session }: { session: Session }) {
                 desktopStatus={desktopStatus}
                 onCreateLobby={() => setShowCreateLobby(true)}
                 onSignOut={() => supabase.auth.signOut()}
+                favoriteConfig={favoriteConfig}
+                onSaveFavoriteConfig={persistFavoriteConfig}
             />
         );
     };
